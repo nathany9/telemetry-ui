@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+/* --- Tailwind v4 token definitions for shadcn utilities --- */
+@theme inline {
+  --color-background: oklch(1 0 0);
+  --color-foreground: oklch(0.145 0 0);
+  --color-border: oklch(0.922 0 0);
+  --color-ring: oklch(0.708 0 0);
+  /* optional: radius if you want rounded tokens later */
+  --radius: 0.625rem;
+}
+
+/* Keep it simple while we debug */
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* These use the tokens above. Without @theme they crash. */
+@layer base {
+  * { @apply border-border outline-ring/50; }
+  body { @apply bg-background text-foreground; }
+}
