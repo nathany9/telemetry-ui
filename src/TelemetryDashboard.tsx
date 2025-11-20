@@ -7,7 +7,7 @@ import TelemetryAnimator from "./TelemetryAnimator";
 
 const API_BASE = (import.meta as any)?.env?.VITE_API_BASE
   || (window as any)?.API_BASE
-  || "http://127.0.0.1:8000";
+  || "https://telemetry-api-7z4ufaf76q-uc.a.run.app";
 
 const fetcher = async (url: string): Promise<any> => {
   console.log("[TelemetryDashboard] Fetching URL:", url);
