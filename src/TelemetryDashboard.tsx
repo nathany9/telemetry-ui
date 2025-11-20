@@ -91,15 +91,26 @@ async function getSessions(params: { year?: string }): Promise<SessionT[]> {
 }
 
 async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
-  const url = `${API_BASE}/sessions/${sessionId}/drivers`;
+  const url = `${API_BASE}/sessions/${sessionId}/drivers/raw`;
   const raw = await fetcher(url);
-  const arr: any[] = Array.isArray(raw) ? raw : (raw.drivers ?? []);
+  const arr: any[] = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw.drivers)
+      ? raw.drivers
+      : (raw.drivers ? Object.values(raw.drivers) : []);
   return arr.map((d: any) => {
+    const driverNumber = d.driver_number ?? d.driverNumber ?? d.number ?? d.DriverNumber;
+    const codeRaw = d.code ?? d.driver_code ?? d.driverCode ?? d.abbreviation ?? d.tla ?? d.Code;
+    const nameRaw = d.name ?? d.full_name ?? d.fullName ?? d.Driver?.name ?? d.Driver?.fullName
+      ?? [d.first_name, d.last_name].filter(Boolean).join(" ") || undefined;
+    const driverId = d.driver_id ?? d.driverId ?? d.id ?? d.DriverId ?? driverNumber ?? codeRaw ?? "unknown";
+    const code = codeRaw ?? driverNumber ?? driverId;
+    const name = nameRaw ?? code ?? driverId;
     return DriverSchema.parse({
-      driverId: String(d.driver_id),
-      driver_number: d.driver_number !== undefined ? String(d.driver_number) : undefined,
-      code: String(d.code),
-      name: String(d.name),
+      driverId: String(driverId),
+      driver_number: driverNumber !== undefined ? String(driverNumber) : undefined,
+      code: String(code),
+      name: String(name),
     });
   });
 }
