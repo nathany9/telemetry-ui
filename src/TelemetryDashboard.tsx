@@ -1,5 +1,5 @@
 // src/TelemetryDashboard.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { z } from "zod";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -95,8 +95,13 @@ async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
   return arr.map((d: any) => {
     const driverNumber = d.driver_number ?? d.driverNumber ?? d.number ?? d.DriverNumber;
     const codeRaw = d.code ?? d.driver_code ?? d.driverCode ?? d.abbreviation ?? d.tla ?? d.Code;
-    const nameRaw = d.name ?? d.full_name ?? d.fullName ?? d.Driver?.name ?? d.Driver?.fullName
-      ?? [d.first_name, d.last_name].filter(Boolean).join(" ") || undefined;
+    const fallbackName = [d.first_name, d.last_name].filter(Boolean).join(" ");
+    const nameRaw = d.name
+      ?? d.full_name
+      ?? d.fullName
+      ?? d.Driver?.name
+      ?? d.Driver?.fullName
+      ?? (fallbackName || undefined);
     const driverId = d.driver_id ?? d.driverId ?? d.id ?? d.DriverId ?? driverNumber ?? codeRaw ?? "unknown";
     const code = codeRaw ?? driverNumber ?? driverId;
     const name = nameRaw ?? code ?? driverId;
@@ -180,7 +185,7 @@ export default function TelemetryDashboard() {
     return map;
   }, [drivers]);
 
-  const { data: sessions, isLoading: sessionsLoading, error: sessionsError } = useSWR(
+  const { data: sessions, isLoading: sessionsLoading } = useSWR(
     ["sessions", yearFilter ?? ""],
     () => getSessions({ year: yearFilter }),
     { revalidateOnFocus: false }
@@ -222,34 +227,34 @@ export default function TelemetryDashboard() {
     }
 
     const driverCodes = selectedDrivers
-      .map(driverNumber => driverNumberToInfo2024[driverNumber]?.code ?? driverNumber)
+      .map((driverNumber) => driversByNumber[driverNumber]?.code ?? driverNumber)
       .filter((code): code is string => Boolean(code));
 
-    if (!driverCodes.length) {
-      setTelemetryData({});
+    const codesToFetch = driverCodes.filter((code) => !telemetryData[code]);
+
+    if (!codesToFetch.length) {
       return;
     }
 
     let cancelled = false;
 
-    fetchFastestTelemetry(qualifyingSession.id, driverCodes)
+    fetchFastestTelemetry(qualifyingSession.id, codesToFetch)
       .then((data) => {
         if (cancelled) return;
-        setTelemetryData(data);
+        setTelemetryData((prev) => ({ ...prev, ...data }));
       })
       .catch((err) => {
         if (cancelled) return;
         console.error(
-          `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${driverCodes.join(", ")}:`,
+          `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${codesToFetch.join(", ")}:`,
           err
         );
-        setTelemetryData({});
       });
 
     return () => {
       cancelled = true;
     };
-  }, [selectedDrivers, qualifyingSession]);
+  };
 
   const lapSeries = useMemo(() => {
     return selectedDrivers
