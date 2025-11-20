@@ -22,28 +22,6 @@ const fetcher = async (url: string): Promise<any> => {
   return json;
 };
 
-const driverNumberToInfo2024: Record<string, { code: string; name: string }> = {
-  "1": { code: "VER", name: "Max Verstappen" },
-  "3": { code: "RIC", name: "Daniel Ricciardo" },
-  "4": { code: "NOR", name: "Lando Norris" },
-  "10": { code: "GAS", name: "Pierre Gasly" },
-  "11": { code: "PER", name: "Sergio Pérez" },
-  "14": { code: "ALO", name: "Fernando Alonso" },
-  "16": { code: "LEC", name: "Charles Leclerc" },
-  "18": { code: "STR", name: "Lance Stroll" },
-  "20": { code: "MAG", name: "Kevin Magnussen" },
-  "22": { code: "TSU", name: "Yuki Tsunoda" },
-  "23": { code: "ALB", name: "Alex Albon" },
-  "24": { code: "ZHO", name: "Zhou Guanyu" },
-  "27": { code: "HUL", name: "Nico Hülkenberg" },
-  "30": { code: "LAW", name: "Liam Lawson" },
-  "31": { code: "OCO", name: "Esteban Ocon" },
-  "44": { code: "HAM", name: "Lewis Hamilton" },
-  "55": { code: "SAI", name: "Carlos Sainz Jr." },
-  "63": { code: "RUS", name: "George Russell" },
-  "77": { code: "BOT", name: "Valtteri Bottas" },
-  "81": { code: "PIA", name: "Oscar Piastri" }
-};
 
 const driverColors: Record<string, string> = {
   VER: "#22c55e",
@@ -91,15 +69,15 @@ async function getSessions(params: { year?: string }): Promise<SessionT[]> {
 }
 
 async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
-  const url = `${API_BASE}/sessions/${sessionId}/drivers`;
+  const url = `${API_BASE}/sessions/${sessionId}/drivers/raw`;
   const raw = await fetcher(url);
   const arr: any[] = Array.isArray(raw) ? raw : (raw.drivers ?? []);
   return arr.map((d: any) => {
     return DriverSchema.parse({
       driverId: String(d.driver_id),
-      driver_number: d.driver_number !== undefined ? String(d.driver_number) : undefined,
-      code: String(d.code),
-      name: String(d.name),
+      driver_number: String(d.driver_number),
+      code: String(d.abbreviation),
+      name: String(d.driver_name),
     });
   });
 }
@@ -132,6 +110,15 @@ export default function TelemetryDashboard() {
   const [drivers, setDrivers] = useState<DriverT[]>([]);
   const [telemetryData, setTelemetryData] = useState<Record<string, any>>({});
   const [timeCursor, setTimeCursor] = useState(0);
+
+  const driversByNumber = useMemo(() => {
+    const map: Record<string, DriverT> = {};
+    drivers.forEach((d) => {
+      const num = d.driver_number ?? d.driverId;
+      map[num] = d;
+    });
+    return map;
+  }, [drivers]);
 
   const { data: sessions, isLoading: sessionsLoading, error: sessionsError } = useSWR(
     ["sessions", yearFilter ?? ""],
@@ -166,21 +153,26 @@ export default function TelemetryDashboard() {
     }
   }, [qualifyingSession]);
 
-  useEffect(() => {
+
+  const loadSelectedTelemetry = () => {
     if (!qualifyingSession) return;
-    selectedDrivers.forEach(driverNumber => {
-      const info = driverNumberToInfo2024[driverNumber];
-      const driverCode = info ? info.code : undefined;
+    selectedDrivers.forEach((driverNumber) => {
+      const drv = driversByNumber[driverNumber];
+      const driverCode = drv?.code;
       if (!driverCode) return;
+
+      // Skip if telemetry for this driver is already loaded
+      if (telemetryData[driverCode]) return;
+
       fetchDriverTelemetry(qualifyingSession.id, driverCode, setTelemetryData);
     });
-  }, [selectedDrivers, qualifyingSession]);
+  };
 
   const lapSeries = useMemo(() => {
     return selectedDrivers
       .map((driverNumber) => {
-        const info = driverNumberToInfo2024[driverNumber];
-        const driverCode = info ? info.code : driverNumber;
+        const drv = driversByNumber[driverNumber];
+        const driverCode = drv?.code ?? driverNumber;
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
@@ -237,7 +229,7 @@ export default function TelemetryDashboard() {
 
         if (!points.length) return null;
 
-        const displayName = info ? info.code : driverCode;
+        const displayName = drv?.code ?? driverCode;
         const color =
           driverColors[displayName] ||
           driverColors[driverCode] ||
@@ -251,7 +243,7 @@ export default function TelemetryDashboard() {
         };
       })
       .filter((s): s is any => s !== null);
-  }, [selectedDrivers, telemetryData]);
+  }, [selectedDrivers, telemetryData, driversByNumber]);
 
   // Debug helper: get current (x, y) for first lap series at current time cursor
   const debugPosition = useMemo(() => {
@@ -286,8 +278,8 @@ export default function TelemetryDashboard() {
 
     const seriesByDriver = selectedDrivers
       .map((driverNumber) => {
-        const info = driverNumberToInfo2024[driverNumber];
-        const driverCode = info ? info.code : driverNumber;
+        const drv = driversByNumber[driverNumber];
+        const driverCode = drv?.code ?? driverNumber;
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
@@ -332,7 +324,7 @@ export default function TelemetryDashboard() {
 
         if (!points.length) return null;
 
-        const displayName = info ? info.code : driverCode;
+        const displayName = drv?.code ?? driverCode;
         const color =
           driverColors[displayName] ||
           driverColors[driverCode] ||
@@ -561,8 +553,7 @@ return (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {drivers.map((d: DriverT) => {
               const num = d.driver_number ?? d.driverId;
-              const info = driverNumberToInfo2024[num];
-              const displayName = info ? info.name : d.name;
+              const displayName = d.name;
               const isChecked = selectedDrivers.includes(num);
               return (
                 <label key={num} className="flex items-center gap-2">
@@ -599,9 +590,9 @@ return (
           <span className="font-medium">Selected drivers:</span>
           <ul className="list-none p-0 flex flex-col gap-2 mt-1">
             {selectedDrivers.map((driverNumber) => {
-              const info = driverNumberToInfo2024[driverNumber];
-              const name = info ? info.name : driverNumber;
-              const driverCode = info ? info.code : driverNumber;
+              const drv = driversByNumber[driverNumber];
+              const name = drv?.name ?? driverNumber;
+              const driverCode = drv?.code ?? driverNumber;
               const raw = telemetryData[driverCode];
               const meta = raw?.lapMeta ?? raw?.meta ?? undefined;
 
@@ -680,6 +671,25 @@ return (
               );
             })}
           </ul>
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              onClick={loadSelectedTelemetry}
+              className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm"
+            >
+              Load telemetry for selected drivers
+            </button>
+            <span className="text-xs text-neutral-400">
+              Loaded:&nbsp;
+              {selectedDrivers
+                .map((driverNumber) => {
+                  const drv = driversByNumber[driverNumber];
+                  const code = drv?.code ?? driverNumber;
+                  return telemetryData[code] ? code : null;
+                })
+                .filter(Boolean)
+                .join(", ") || "none"}
+            </span>
+          </div>
         </div>
       )}
 
