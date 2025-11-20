@@ -52,6 +52,22 @@ const DriverSchema = z.object({
 });
 type DriverT = z.infer<typeof DriverSchema>;
 
+type TelemetryWindow = {
+  t: number[];
+  x?: number[];
+  y?: number[];
+  speed?: number[];
+  throttle?: number[];
+  brake?: number[];
+  gear?: number[];
+  drs?: number[];
+  samples?: any[];
+  data?: any[];
+  lapMeta?: any;
+  meta?: any;
+  [key: string]: any;
+};
+
 async function getSessions(params: { year?: string }): Promise<SessionT[]> {
   const q = new URLSearchParams();
   if (params.year) q.set("year", params.year);
@@ -93,25 +109,58 @@ async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
   });
 }
 
-async function fetchDriverTelemetry(
+async function fetchFastestTelemetry(
   sessionId: string,
-  driverCode: string,
-  setTelemetry: React.Dispatch<React.SetStateAction<Record<string, any>>>
-): Promise<void> {
-  try {
-    const fastestLapUrl = `${API_BASE}/sessions/${sessionId}/fastest-lap?driver=${driverCode}&only_by_time=true`;
-    console.log("[TelemetryDashboard] fetching fastest-lap for", driverCode, fastestLapUrl);
-    const lapRes: any = await fetcher(fastestLapUrl);
-    const lapNumber = String(lapRes.lap_number ?? lapRes.lapNumber);
-    const lapId = `${sessionId}_${driverCode}_${lapNumber}`;
-    const telemetryUrl = `${API_BASE}/laps/${lapId}/telemetry?start=0&end=999&mode=time`;
-    console.log("[TelemetryDashboard] fetching telemetry for", driverCode, telemetryUrl);
-    const telemetry = await fetcher(telemetryUrl);
-    const merged = { ...telemetry, lapMeta: lapRes };
-    setTelemetry((prev) => ({ ...prev, [driverCode]: merged }));
-  } catch (err) {
-    console.error("[TelemetryDashboard] Error fetching telemetry for driver:", driverCode, err);
+  driverCodes: string[],
+): Promise<Record<string, TelemetryWindow>> {
+  if (!driverCodes.length) return {};
+
+  const start = 0;
+  const end = 999;
+  const mode = "time";
+  const url = `${API_BASE}/sessions/${sessionId}/fastest-telemetry?start=${start}&end=${end}&mode=${mode}`;
+  const payload = { drivers: driverCodes };
+
+  console.log(`[TelemetryDashboard] POST fastest-telemetry for drivers: ${driverCodes.join(", ")}`, url, payload);
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  console.log(`[TelemetryDashboard] Response status for fastest-telemetry ${url}:`, response.status);
+
+  if (!response.ok) {
+    const bodyText = await response.text();
+    console.error("[TelemetryDashboard] Fastest telemetry fetch failed:", response.status, bodyText);
+    throw new Error(`HTTP ${response.status}`);
   }
+
+  const json = await response.json();
+  console.log("[TelemetryDashboard] Fastest telemetry response JSON:", json);
+
+  const rawMap: any = json?.telemetry ?? json?.data ?? json;
+  const telemetryByDriver: Record<string, TelemetryWindow> = {};
+
+  driverCodes.forEach((code) => {
+    if (rawMap && rawMap[code]) {
+      telemetryByDriver[code] = rawMap[code];
+    }
+  });
+
+  if (!Object.keys(telemetryByDriver).length && rawMap && typeof rawMap === "object") {
+    Object.entries(rawMap).forEach(([key, value]) => {
+      if (typeof value === "object") {
+        telemetryByDriver[key] = value as TelemetryWindow;
+      }
+    });
+  }
+
+  return telemetryByDriver;
 }
 
 export default function TelemetryDashboard() {
@@ -119,7 +168,7 @@ export default function TelemetryDashboard() {
   const [eventFilter, setEventFilter] = useState<string | undefined>(undefined);
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
   const [drivers, setDrivers] = useState<DriverT[]>([]);
-  const [telemetryData, setTelemetryData] = useState<Record<string, any>>({});
+  const [telemetryData, setTelemetryData] = useState<Record<string, TelemetryWindow>>({});
   const [timeCursor, setTimeCursor] = useState(0);
 
   const driversByNumber = useMemo(() => {
@@ -167,17 +216,40 @@ export default function TelemetryDashboard() {
 
   const loadSelectedTelemetry = () => {
     if (!qualifyingSession) return;
-    selectedDrivers.forEach((driverNumber) => {
-      const drv = driversByNumber[driverNumber];
-      const driverCode = drv?.code;
-      if (!driverCode) return;
+    if (!selectedDrivers.length) {
+      setTelemetryData({});
+      return;
+    }
 
-      // Skip if telemetry for this driver is already loaded
-      if (telemetryData[driverCode]) return;
+    const driverCodes = selectedDrivers
+      .map(driverNumber => driverNumberToInfo2024[driverNumber]?.code ?? driverNumber)
+      .filter((code): code is string => Boolean(code));
 
-      fetchDriverTelemetry(qualifyingSession.id, driverCode, setTelemetryData);
-    });
-  };
+    if (!driverCodes.length) {
+      setTelemetryData({});
+      return;
+    }
+
+    let cancelled = false;
+
+    fetchFastestTelemetry(qualifyingSession.id, driverCodes)
+      .then((data) => {
+        if (cancelled) return;
+        setTelemetryData(data);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error(
+          `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${driverCodes.join(", ")}:`,
+          err
+        );
+        setTelemetryData({});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDrivers, qualifyingSession]);
 
   const lapSeries = useMemo(() => {
     return selectedDrivers
@@ -605,7 +677,7 @@ return (
               const name = drv?.name ?? driverNumber;
               const driverCode = drv?.code ?? driverNumber;
               const raw = telemetryData[driverCode];
-              const meta = raw?.lapMeta ?? raw?.meta ?? undefined;
+              const meta = raw?.lapMeta ?? raw?.meta ?? raw?.lap ?? raw?.lap_meta ?? undefined;
 
               const lapTimeSec = meta
                 ? Number(
