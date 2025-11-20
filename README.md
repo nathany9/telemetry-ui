@@ -71,3 +71,15 @@ export default defineConfig([
   },
 ])
 ```
+
+## API base configuration
+
+Set `VITE_API_BASE` to point the frontend at the desired backend instance:
+
+```bash
+# Local development against a backend running on your machine
+VITE_API_BASE=http://127.0.0.1:8000 npm run dev
+
+# Production build that targets the hosted Cloud Run API
+VITE_API_BASE=https://telemetry-api-7z4ufaf76q-uc.a.run.app npm run build
+```
