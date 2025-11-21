@@ -7,7 +7,7 @@ import TelemetryAnimator from "./TelemetryAnimator";
 
 const API_BASE = (import.meta as any)?.env?.VITE_API_BASE
   || (window as any)?.API_BASE
-  || "https://telemetry-api-7z4ufaf76q-uc.a.run.app";
+  || "https://telemetry-backend-920948124720.us-west1.run.app";
 
 const fetcher = async (url: string): Promise<any> => {
   console.log("[TelemetryDashboard] Fetching URL:", url);
@@ -65,7 +65,41 @@ type TelemetryWindow = {
   data?: any[];
   lapMeta?: any;
   meta?: any;
+  lap?: any;
+  telemetry?: any;
   [key: string]: any;
+};
+
+const extractTelemetrySamples = (raw: any): any[] => {
+  const telemetry = raw?.telemetry ?? raw;
+
+  if (!telemetry || typeof telemetry !== "object") return [];
+
+  if (Array.isArray(telemetry)) return telemetry;
+
+  if (Array.isArray(telemetry.samples)) return telemetry.samples;
+
+  if (Array.isArray(telemetry.data)) return telemetry.data;
+
+  if (Array.isArray(telemetry.t)) {
+    const len = telemetry.t.length;
+    const samples: any[] = [];
+    for (let i = 0; i < len; i++) {
+      samples.push({
+        t: telemetry.t[i],
+        x: telemetry.x?.[i],
+        y: telemetry.y?.[i],
+        speed: telemetry.speed?.[i],
+        throttle: telemetry.throttle?.[i],
+        brake: telemetry.brake?.[i],
+        gear: telemetry.gear?.[i],
+        drs: telemetry.drs?.[i],
+      });
+    }
+    return samples;
+  }
+
+  return [];
 };
 
 async function getSessions(params: { year?: string }): Promise<SessionT[]> {
@@ -93,23 +127,15 @@ async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
       ? raw.drivers
       : (raw.drivers ? Object.values(raw.drivers) : []);
   return arr.map((d: any) => {
-    const driverNumber = d.driver_number ?? d.driverNumber ?? d.number ?? d.DriverNumber;
-    const codeRaw = d.code ?? d.driver_code ?? d.driverCode ?? d.abbreviation ?? d.tla ?? d.Code;
-    const fallbackName = [d.first_name, d.last_name].filter(Boolean).join(" ");
-    const nameRaw = d.name
-      ?? d.full_name
-      ?? d.fullName
-      ?? d.Driver?.name
-      ?? d.Driver?.fullName
-      ?? (fallbackName || undefined);
+    const driverNumber = d.driver_number;
+    const codeRaw = d.abbreviation;
+    const nameRaw = d.driver_name;
     const driverId = d.driver_id ?? d.driverId ?? d.id ?? d.DriverId ?? driverNumber ?? codeRaw ?? "unknown";
-    const code = codeRaw ?? driverNumber ?? driverId;
-    const name = nameRaw ?? code ?? driverId;
     return DriverSchema.parse({
       driverId: String(driverId),
-      driver_number: driverNumber !== undefined ? String(driverNumber) : undefined,
-      code: String(code),
-      name: String(name),
+      driver_number: String(driverNumber),
+      code: String(codeRaw),
+      name: String(nameRaw),
     });
   });
 }
@@ -151,16 +177,41 @@ async function fetchFastestTelemetry(
   const rawMap: any = json?.telemetry ?? json?.data ?? json;
   const telemetryByDriver: Record<string, TelemetryWindow> = {};
 
+  const normalizeEntry = (key: string, entry: any) => {
+    const lapMeta = entry?.lap ?? entry?.lapMeta ?? entry?.meta ?? entry?.lap_meta;
+    const telemetry = entry?.telemetry ?? entry?.data ?? entry;
+    const driverCode = (lapMeta?.driver ?? entry?.driver ?? key) as string;
+    const window: TelemetryWindow = {
+      t: Array.isArray(telemetry?.t) ? telemetry.t : [],
+      ...(telemetry && typeof telemetry === "object" ? telemetry : {}),
+      lapMeta: lapMeta ?? telemetry?.lapMeta ?? telemetry?.meta,
+      meta: lapMeta ?? telemetry?.meta,
+      lap: lapMeta,
+      telemetry,
+    };
+    return { driverCode, window };
+  };
+
+  // First try to populate using requested driver codes
   driverCodes.forEach((code) => {
     if (rawMap && rawMap[code]) {
-      telemetryByDriver[code] = rawMap[code];
+      const { window } = normalizeEntry(code, rawMap[code]);
+      telemetryByDriver[code] = window;
     }
   });
 
-  if (!Object.keys(telemetryByDriver).length && rawMap && typeof rawMap === "object") {
+  // Fallback: include any entries present in the response
+  if (rawMap && typeof rawMap === "object") {
     Object.entries(rawMap).forEach(([key, value]) => {
-      if (typeof value === "object") {
-        telemetryByDriver[key] = value as TelemetryWindow;
+      if (typeof value !== "object") return;
+      const { driverCode, window } = normalizeEntry(key, value);
+      const code = driverCode || key;
+      if (!telemetryByDriver[code]) {
+        telemetryByDriver[code] = window;
+      } else if (!telemetryByDriver[code].lapMeta && window.lapMeta) {
+        telemetryByDriver[code].lapMeta = window.lapMeta;
+        telemetryByDriver[code].meta = window.lapMeta;
+        telemetryByDriver[code].lap = window.lap;
       }
     });
   }
@@ -229,7 +280,9 @@ export default function TelemetryDashboard() {
     const driverCodes = selectedDrivers
       .map((driverNumber) => driversByNumber[driverNumber]?.code ?? driverNumber)
       .filter((code): code is string => Boolean(code));
-
+    console.log("selectedDrivers:", selectedDrivers);
+    console.log("driversByNumber:", driversByNumber);
+    console.log("driverCodes:", driverCodes);
     const codesToFetch = driverCodes.filter((code) => !telemetryData[code]);
 
     if (!codesToFetch.length) {
@@ -264,32 +317,7 @@ export default function TelemetryDashboard() {
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
-        // Try to normalize different possible API shapes into [{t,x,y,speed}]
-        // 1) If backend returns an array of samples
-        let samples: any[] = [];
-        if (Array.isArray(raw)) {
-          samples = raw;
-        } else if (Array.isArray(raw.samples)) {
-          samples = raw.samples;
-        } else if (Array.isArray(raw.data)) {
-          samples = raw.data;
-        } else if (Array.isArray(raw.t)) {
-          // Columnar shape: t, x, y, speed, etc. are arrays
-          const len = raw.t.length;
-          for (let i = 0; i < len; i++) {
-            samples.push({
-              t: raw.t[i],
-              x: raw.x?.[i],
-              y: raw.y?.[i],
-              speed: raw.speed?.[i],
-              throttle: raw.throttle?.[i],
-              brake: raw.brake?.[i],
-              gear: raw.gear?.[i],
-              drs: raw.drs?.[i],
-            });
-          }
-        }
-
+        const samples = extractTelemetrySamples(raw);
 
         const points = samples
           .map((s: any) => {
@@ -371,28 +399,7 @@ export default function TelemetryDashboard() {
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
-        let samples: any[] = [];
-        if (Array.isArray(raw)) {
-          samples = raw;
-        } else if (Array.isArray(raw.samples)) {
-          samples = raw.samples;
-        } else if (Array.isArray(raw.data)) {
-          samples = raw.data;
-        } else if (Array.isArray(raw.t)) {
-          const len = raw.t.length;
-          for (let i = 0; i < len; i++) {
-            samples.push({
-              t: raw.t[i],
-              x: raw.x?.[i],
-              y: raw.y?.[i],
-              speed: raw.speed?.[i],
-              throttle: raw.throttle?.[i],
-              brake: raw.brake?.[i],
-              gear: raw.gear?.[i],
-              drs: raw.drs?.[i],
-            });
-          }
-        }
+        const samples = extractTelemetrySamples(raw);
 
         const points = samples
           .map((s: any) => {
