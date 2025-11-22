@@ -1,13 +1,12 @@
 // src/TelemetryDashboard.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import { z } from "zod";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import TelemetryAnimator from "./TelemetryAnimator";
 
 const API_BASE = (import.meta as any)?.env?.VITE_API_BASE
-  || (window as any)?.API_BASE
-  || "https://telemetry-api-7z4ufaf76q-uc.a.run.app";
+  || "https://telemetry-backend-920948124720.us-west1.run.app";
 
 const fetcher = async (url: string): Promise<any> => {
   console.log("[TelemetryDashboard] Fetching URL:", url);
@@ -22,19 +21,7 @@ const fetcher = async (url: string): Promise<any> => {
   return json;
 };
 
-
-const driverColors: Record<string, string> = {
-  VER: "#22c55e",
-  LEC: "#3b82f6",
-  HAM: "#ef4444",
-  NOR: "#a855f7",
-  PER: "#f97316",
-  ALO: "#22d3ee",
-  SAI: "#eab308",
-  RUS: "#0ea5e9",
-  PIA: "#ec4899",
-  // fallback handled later
-};
+const driverColorPalette = ["#22c55e", "#3b82f6", "#f97316"];
 
 const SessionSchema = z.object({
   id: z.string(),
@@ -65,8 +52,51 @@ type TelemetryWindow = {
   data?: any[];
   lapMeta?: any;
   meta?: any;
+  lap?: any;
+  telemetry?: any;
   [key: string]: any;
 };
+
+const extractTelemetrySamples = (raw: any): any[] => {
+  const telemetry = raw?.telemetry ?? raw;
+
+  if (!telemetry || typeof telemetry !== "object") return [];
+
+  if (Array.isArray(telemetry)) return telemetry;
+
+  if (Array.isArray(telemetry.samples)) return telemetry.samples;
+
+  if (Array.isArray(telemetry.data)) return telemetry.data;
+
+  if (Array.isArray(telemetry.t)) {
+    const len = telemetry.t.length;
+    const samples: any[] = [];
+    for (let i = 0; i < len; i++) {
+      samples.push({
+        t: telemetry.t[i],
+        x: telemetry.x?.[i],
+        y: telemetry.y?.[i],
+        speed: telemetry.speed?.[i],
+        throttle: telemetry.throttle?.[i],
+        brake: telemetry.brake?.[i],
+        gear: telemetry.gear?.[i],
+        drs: telemetry.drs?.[i],
+      });
+    }
+    return samples;
+  }
+
+  return [];
+};
+
+const LoadingOverlay = ({ message }: { message: string }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+    <div className="px-4 py-3 bg-neutral-900 border border-neutral-700 rounded-lg shadow-lg text-sm flex items-center gap-2">
+      <span className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+      <span>{message}</span>
+    </div>
+  </div>
+);
 
 async function getSessions(params: { year?: string }): Promise<SessionT[]> {
   const q = new URLSearchParams();
@@ -93,18 +123,15 @@ async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
       ? raw.drivers
       : (raw.drivers ? Object.values(raw.drivers) : []);
   return arr.map((d: any) => {
-    const driverNumber = d.driver_number ?? d.driverNumber ?? d.number ?? d.DriverNumber;
-    const codeRaw = d.code ?? d.driver_code ?? d.driverCode ?? d.abbreviation ?? d.tla ?? d.Code;
-    const nameRaw = d.name ?? d.full_name ?? d.fullName ?? d.Driver?.name ?? d.Driver?.fullName
-      ?? [d.first_name, d.last_name].filter(Boolean).join(" ") || undefined;
+    const driverNumber = d.driver_number ? String(d.driver_number) : undefined;
+    const codeRaw = d.abbreviation;
+    const nameRaw = d.driver_name;
     const driverId = d.driver_id ?? d.driverId ?? d.id ?? d.DriverId ?? driverNumber ?? codeRaw ?? "unknown";
-    const code = codeRaw ?? driverNumber ?? driverId;
-    const name = nameRaw ?? code ?? driverId;
     return DriverSchema.parse({
       driverId: String(driverId),
-      driver_number: driverNumber !== undefined ? String(driverNumber) : undefined,
-      code: String(code),
-      name: String(name),
+      driver_number: String(driverNumber),
+      code: String(codeRaw),
+      name: String(nameRaw),
     });
   });
 }
@@ -146,16 +173,41 @@ async function fetchFastestTelemetry(
   const rawMap: any = json?.telemetry ?? json?.data ?? json;
   const telemetryByDriver: Record<string, TelemetryWindow> = {};
 
+  const normalizeEntry = (key: string, entry: any) => {
+    const lapMeta = entry?.lap ?? entry?.lapMeta ?? entry?.meta ?? entry?.lap_meta;
+    const telemetry = entry?.telemetry ?? entry?.data ?? entry;
+    const driverCode = (lapMeta?.driver ?? entry?.driver ?? key) as string;
+    const window: TelemetryWindow = {
+      t: Array.isArray(telemetry?.t) ? telemetry.t : [],
+      ...(telemetry && typeof telemetry === "object" ? telemetry : {}),
+      lapMeta: lapMeta ?? telemetry?.lapMeta ?? telemetry?.meta,
+      meta: lapMeta ?? telemetry?.meta,
+      lap: lapMeta,
+      telemetry,
+    };
+    return { driverCode, window };
+  };
+
+  // First try to populate using requested driver codes
   driverCodes.forEach((code) => {
     if (rawMap && rawMap[code]) {
-      telemetryByDriver[code] = rawMap[code];
+      const { window } = normalizeEntry(code, rawMap[code]);
+      telemetryByDriver[code] = window;
     }
   });
 
-  if (!Object.keys(telemetryByDriver).length && rawMap && typeof rawMap === "object") {
+  // Fallback: include any entries present in the response
+  if (rawMap && typeof rawMap === "object") {
     Object.entries(rawMap).forEach(([key, value]) => {
-      if (typeof value === "object") {
-        telemetryByDriver[key] = value as TelemetryWindow;
+      if (typeof value !== "object") return;
+      const { driverCode, window } = normalizeEntry(key, value);
+      const code = driverCode || key;
+      if (!telemetryByDriver[code]) {
+        telemetryByDriver[code] = window;
+      } else if (!telemetryByDriver[code].lapMeta && window.lapMeta) {
+        telemetryByDriver[code].lapMeta = window.lapMeta;
+        telemetryByDriver[code].meta = window.lapMeta;
+        telemetryByDriver[code].lap = window.lap;
       }
     });
   }
@@ -169,6 +221,8 @@ export default function TelemetryDashboard() {
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
   const [drivers, setDrivers] = useState<DriverT[]>([]);
   const [telemetryData, setTelemetryData] = useState<Record<string, TelemetryWindow>>({});
+  const [telemetryLoading, setTelemetryLoading] = useState(false);
+  const [driversLoading, setDriversLoading] = useState(false);
   const [timeCursor, setTimeCursor] = useState(0);
 
   const driversByNumber = useMemo(() => {
@@ -180,7 +234,17 @@ export default function TelemetryDashboard() {
     return map;
   }, [drivers]);
 
-  const { data: sessions, isLoading: sessionsLoading, error: sessionsError } = useSWR(
+  const driverColorByCode = useMemo(() => {
+    const map: Record<string, string> = {};
+    selectedDrivers.forEach((driverNumber, idx) => {
+      const drv = driversByNumber[driverNumber];
+      const driverCode = drv?.code ?? driverNumber;
+      map[driverCode] = driverColorPalette[idx % driverColorPalette.length];
+    });
+    return map;
+  }, [selectedDrivers, driversByNumber]);
+
+  const { data: sessions, isLoading: sessionsLoading } = useSWR(
     ["sessions", yearFilter ?? ""],
     () => getSessions({ year: yearFilter }),
     { revalidateOnFocus: false }
@@ -205,16 +269,21 @@ export default function TelemetryDashboard() {
 
   useEffect(() => {
     if (qualifyingSession) {
+      setDriversLoading(true);
       getDriversForSession(qualifyingSession.id)
         .then(setDrivers)
-        .catch(err => console.error("[TelemetryDashboard] Error fetching drivers:", err));
+        .catch(err => console.error("[TelemetryDashboard] Error fetching drivers:", err))
+        .finally(() => setDriversLoading(false));
       setSelectedDrivers([]);
       setTelemetryData({});
+    } else {
+      setDrivers([]);
+      setDriversLoading(false);
     }
   }, [qualifyingSession]);
 
 
-  const loadSelectedTelemetry = () => {
+  const loadSelectedTelemetry = async () => {
     if (!qualifyingSession) return;
     if (!selectedDrivers.length) {
       setTelemetryData({});
@@ -222,34 +291,27 @@ export default function TelemetryDashboard() {
     }
 
     const driverCodes = selectedDrivers
-      .map(driverNumber => driverNumberToInfo2024[driverNumber]?.code ?? driverNumber)
+      .map((driverNumber) => driversByNumber[driverNumber]?.code ?? driverNumber)
       .filter((code): code is string => Boolean(code));
+    const codesToFetch = driverCodes.filter((code) => !telemetryData[code]);
 
-    if (!driverCodes.length) {
-      setTelemetryData({});
+    if (!codesToFetch.length) {
       return;
     }
 
-    let cancelled = false;
-
-    fetchFastestTelemetry(qualifyingSession.id, driverCodes)
-      .then((data) => {
-        if (cancelled) return;
-        setTelemetryData(data);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error(
-          `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${driverCodes.join(", ")}:`,
-          err
-        );
-        setTelemetryData({});
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedDrivers, qualifyingSession]);
+    setTelemetryLoading(true);
+    try {
+      const data = await fetchFastestTelemetry(qualifyingSession.id, codesToFetch);
+      setTelemetryData((prev) => ({ ...prev, ...data }));
+    } catch (err) {
+      console.error(
+        `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${codesToFetch.join(", ")}:`,
+        err
+      );
+    } finally {
+      setTelemetryLoading(false);
+    }
+  };
 
   const lapSeries = useMemo(() => {
     return selectedDrivers
@@ -259,32 +321,7 @@ export default function TelemetryDashboard() {
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
-        // Try to normalize different possible API shapes into [{t,x,y,speed}]
-        // 1) If backend returns an array of samples
-        let samples: any[] = [];
-        if (Array.isArray(raw)) {
-          samples = raw;
-        } else if (Array.isArray(raw.samples)) {
-          samples = raw.samples;
-        } else if (Array.isArray(raw.data)) {
-          samples = raw.data;
-        } else if (Array.isArray(raw.t)) {
-          // Columnar shape: t, x, y, speed, etc. are arrays
-          const len = raw.t.length;
-          for (let i = 0; i < len; i++) {
-            samples.push({
-              t: raw.t[i],
-              x: raw.x?.[i],
-              y: raw.y?.[i],
-              speed: raw.speed?.[i],
-              throttle: raw.throttle?.[i],
-              brake: raw.brake?.[i],
-              gear: raw.gear?.[i],
-              drs: raw.drs?.[i],
-            });
-          }
-        }
-
+        const samples = extractTelemetrySamples(raw);
 
         const points = samples
           .map((s: any) => {
@@ -313,10 +350,7 @@ export default function TelemetryDashboard() {
         if (!points.length) return null;
 
         const displayName = drv?.code ?? driverCode;
-        const color =
-          driverColors[displayName] ||
-          driverColors[driverCode] ||
-          "#22c55e";
+        const color = driverColorByCode[driverCode] ?? driverColorPalette[0];
 
         return {
           driverId: driverCode,
@@ -329,29 +363,29 @@ export default function TelemetryDashboard() {
   }, [selectedDrivers, telemetryData, driversByNumber]);
 
   // Debug helper: get current (x, y) for first lap series at current time cursor
-  const debugPosition = useMemo(() => {
-    if (!lapSeries.length) return null;
-    const s = lapSeries[0];
-    if (!s.points || !s.points.length) return null;
+  // const debugPosition = useMemo(() => {
+  //   if (!lapSeries.length) return null;
+  //   const s = lapSeries[0];
+  //   if (!s.points || !s.points.length) return null;
 
-    let best: any = s.points[0];
-    let bestDt = Math.abs(best.t - timeCursor);
-    for (let i = 1; i < s.points.length; i++) {
-      const p: any = s.points[i];
-      const dt = Math.abs(p.t - timeCursor);
-      if (dt < bestDt) {
-        best = p;
-        bestDt = dt;
-      }
-    }
-    return {
-      driverId: s.driverId,
-      displayName: s.displayName,
-      t: best.t,
-      x: best.rawX ?? best.x,
-      y: best.rawY ?? best.y,
-    };
-  }, [lapSeries, timeCursor]);
+  //   let best: any = s.points[0];
+  //   let bestDt = Math.abs(best.t - timeCursor);
+  //   for (let i = 1; i < s.points.length; i++) {
+  //     const p: any = s.points[i];
+  //     const dt = Math.abs(p.t - timeCursor);
+  //     if (dt < bestDt) {
+  //       best = p;
+  //       bestDt = dt;
+  //     }
+  //   }
+  //   return {
+  //     driverId: s.driverId,
+  //     displayName: s.displayName,
+  //     t: best.t,
+  //     x: best.rawX ?? best.x,
+  //     y: best.rawY ?? best.y,
+  //   };
+  // }, [lapSeries, timeCursor]);
 
   const renderMetricChart = (
     metric: "speed" | "throttle" | "brake" | "gear",
@@ -366,28 +400,7 @@ export default function TelemetryDashboard() {
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
-        let samples: any[] = [];
-        if (Array.isArray(raw)) {
-          samples = raw;
-        } else if (Array.isArray(raw.samples)) {
-          samples = raw.samples;
-        } else if (Array.isArray(raw.data)) {
-          samples = raw.data;
-        } else if (Array.isArray(raw.t)) {
-          const len = raw.t.length;
-          for (let i = 0; i < len; i++) {
-            samples.push({
-              t: raw.t[i],
-              x: raw.x?.[i],
-              y: raw.y?.[i],
-              speed: raw.speed?.[i],
-              throttle: raw.throttle?.[i],
-              brake: raw.brake?.[i],
-              gear: raw.gear?.[i],
-              drs: raw.drs?.[i],
-            });
-          }
-        }
+        const samples = extractTelemetrySamples(raw);
 
         const points = samples
           .map((s: any) => {
@@ -408,10 +421,7 @@ export default function TelemetryDashboard() {
         if (!points.length) return null;
 
         const displayName = drv?.code ?? driverCode;
-        const color =
-          driverColors[displayName] ||
-          driverColors[driverCode] ||
-          "#22c55e";
+        const color = driverColorByCode[driverCode] ?? driverColorPalette[0];
 
         return { driverCode, displayName, color, points };
       })
@@ -757,9 +767,10 @@ return (
           <div className="mt-3 flex items-center gap-3">
             <button
               onClick={loadSelectedTelemetry}
-              className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm"
+              className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+              disabled={telemetryLoading}
             >
-              Load telemetry for selected drivers
+              {telemetryLoading ? "Loading telemetry…" : "Load telemetry for selected drivers"}
             </button>
             <span className="text-xs text-neutral-400">
               Loaded:&nbsp;
@@ -772,6 +783,11 @@ return (
                 .filter(Boolean)
                 .join(", ") || "none"}
             </span>
+            {telemetryLoading && (
+              <span className="text-xs text-blue-400" aria-live="polite">
+                Fetching telemetry…
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -791,13 +807,6 @@ return (
       {selectedDrivers.length > 0 && (
         <div className="mt-6 space-y-4">
           <h2 className="text-xl font-medium mb-1">Telemetry Charts</h2>
-          {debugPosition && (
-            <div className="text-xs text-gray-500">
-              Debug (first selected lap): t={debugPosition.t.toFixed(3)}s,&nbsp;
-              x={debugPosition.x.toFixed(3)},&nbsp;
-              y={debugPosition.y.toFixed(3)}
-            </div>
-          )}
           {renderMetricChart("speed", "Speed")}
           {renderMetricChart("throttle", "Throttle")}
           {renderMetricChart("brake", "Brake")}
@@ -811,6 +820,10 @@ return (
         <div className="text-center text-gray-500 p-4">
           No qualifying session found for the selected event.
         </div>
+      )}
+
+      {(sessionsLoading || driversLoading) && (
+        <LoadingOverlay message={driversLoading ? "Loading session results…" : "Loading sessions…"} />
       )}
     </div>
   );

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type TelemetryPoint = {
   t: number;   // seconds from lap start
@@ -57,18 +57,6 @@ function sampleAt(points: TelemetryPoint[], t: number) {
 function length2D(x0: number, y0: number, x1: number, y1: number) {
   const dx = x1 - x0, dy = y1 - y0;
   return Math.hypot(dx, dy);
-}
-
-function bboxOf(points: { x: number; y: number }[]) {
-  if (!points.length) return { minX: 0, maxX: 1, minY: 0, maxY: 1 };
-  let minX = points[0].x, maxX = points[0].x, minY = points[0].y, maxY = points[0].y;
-  for (const p of points) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  }
-  return { minX, maxX, minY, maxY };
 }
 
 export default function TelemetryAnimator({
