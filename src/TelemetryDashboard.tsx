@@ -6,7 +6,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import TelemetryAnimator from "./TelemetryAnimator";
 
 const API_BASE = (import.meta as any)?.env?.VITE_API_BASE
-  || (window as any)?.API_BASE
   || "https://telemetry-backend-920948124720.us-west1.run.app";
 
 const fetcher = async (url: string): Promise<any> => {
@@ -22,19 +21,7 @@ const fetcher = async (url: string): Promise<any> => {
   return json;
 };
 
-
-const driverColors: Record<string, string> = {
-  VER: "#22c55e",
-  LEC: "#3b82f6",
-  HAM: "#ef4444",
-  NOR: "#a855f7",
-  PER: "#f97316",
-  ALO: "#22d3ee",
-  SAI: "#eab308",
-  RUS: "#0ea5e9",
-  PIA: "#ec4899",
-  // fallback handled later
-};
+const driverColorPalette = ["#22c55e", "#3b82f6", "#f97316"];
 
 const SessionSchema = z.object({
   id: z.string(),
@@ -102,6 +89,15 @@ const extractTelemetrySamples = (raw: any): any[] => {
   return [];
 };
 
+const LoadingOverlay = ({ message }: { message: string }) => (
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+    <div className="px-4 py-3 bg-neutral-900 border border-neutral-700 rounded-lg shadow-lg text-sm flex items-center gap-2">
+      <span className="h-2 w-2 rounded-full bg-blue-400 animate-pulse" />
+      <span>{message}</span>
+    </div>
+  </div>
+);
+
 async function getSessions(params: { year?: string }): Promise<SessionT[]> {
   const q = new URLSearchParams();
   if (params.year) q.set("year", params.year);
@@ -127,7 +123,7 @@ async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
       ? raw.drivers
       : (raw.drivers ? Object.values(raw.drivers) : []);
   return arr.map((d: any) => {
-    const driverNumber = d.driver_number;
+    const driverNumber = d.driver_number ? String(d.driver_number) : undefined;
     const codeRaw = d.abbreviation;
     const nameRaw = d.driver_name;
     const driverId = d.driver_id ?? d.driverId ?? d.id ?? d.DriverId ?? driverNumber ?? codeRaw ?? "unknown";
@@ -225,6 +221,8 @@ export default function TelemetryDashboard() {
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
   const [drivers, setDrivers] = useState<DriverT[]>([]);
   const [telemetryData, setTelemetryData] = useState<Record<string, TelemetryWindow>>({});
+  const [telemetryLoading, setTelemetryLoading] = useState(false);
+  const [driversLoading, setDriversLoading] = useState(false);
   const [timeCursor, setTimeCursor] = useState(0);
 
   const driversByNumber = useMemo(() => {
@@ -235,6 +233,16 @@ export default function TelemetryDashboard() {
     });
     return map;
   }, [drivers]);
+
+  const driverColorByCode = useMemo(() => {
+    const map: Record<string, string> = {};
+    selectedDrivers.forEach((driverNumber, idx) => {
+      const drv = driversByNumber[driverNumber];
+      const driverCode = drv?.code ?? driverNumber;
+      map[driverCode] = driverColorPalette[idx % driverColorPalette.length];
+    });
+    return map;
+  }, [selectedDrivers, driversByNumber]);
 
   const { data: sessions, isLoading: sessionsLoading } = useSWR(
     ["sessions", yearFilter ?? ""],
@@ -261,16 +269,21 @@ export default function TelemetryDashboard() {
 
   useEffect(() => {
     if (qualifyingSession) {
+      setDriversLoading(true);
       getDriversForSession(qualifyingSession.id)
         .then(setDrivers)
-        .catch(err => console.error("[TelemetryDashboard] Error fetching drivers:", err));
+        .catch(err => console.error("[TelemetryDashboard] Error fetching drivers:", err))
+        .finally(() => setDriversLoading(false));
       setSelectedDrivers([]);
       setTelemetryData({});
+    } else {
+      setDrivers([]);
+      setDriversLoading(false);
     }
   }, [qualifyingSession]);
 
 
-  const loadSelectedTelemetry = () => {
+  const loadSelectedTelemetry = async () => {
     if (!qualifyingSession) return;
     if (!selectedDrivers.length) {
       setTelemetryData({});
@@ -280,33 +293,24 @@ export default function TelemetryDashboard() {
     const driverCodes = selectedDrivers
       .map((driverNumber) => driversByNumber[driverNumber]?.code ?? driverNumber)
       .filter((code): code is string => Boolean(code));
-    console.log("selectedDrivers:", selectedDrivers);
-    console.log("driversByNumber:", driversByNumber);
-    console.log("driverCodes:", driverCodes);
     const codesToFetch = driverCodes.filter((code) => !telemetryData[code]);
 
     if (!codesToFetch.length) {
       return;
     }
 
-    let cancelled = false;
-
-    fetchFastestTelemetry(qualifyingSession.id, codesToFetch)
-      .then((data) => {
-        if (cancelled) return;
-        setTelemetryData((prev) => ({ ...prev, ...data }));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error(
-          `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${codesToFetch.join(", ")}:`,
-          err
-        );
-      });
-
-    return () => {
-      cancelled = true;
-    };
+    setTelemetryLoading(true);
+    try {
+      const data = await fetchFastestTelemetry(qualifyingSession.id, codesToFetch);
+      setTelemetryData((prev) => ({ ...prev, ...data }));
+    } catch (err) {
+      console.error(
+        `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${codesToFetch.join(", ")}:`,
+        err
+      );
+    } finally {
+      setTelemetryLoading(false);
+    }
   };
 
   const lapSeries = useMemo(() => {
@@ -346,10 +350,7 @@ export default function TelemetryDashboard() {
         if (!points.length) return null;
 
         const displayName = drv?.code ?? driverCode;
-        const color =
-          driverColors[displayName] ||
-          driverColors[driverCode] ||
-          "#22c55e";
+        const color = driverColorByCode[driverCode] ?? driverColorPalette[0];
 
         return {
           driverId: driverCode,
@@ -362,29 +363,29 @@ export default function TelemetryDashboard() {
   }, [selectedDrivers, telemetryData, driversByNumber]);
 
   // Debug helper: get current (x, y) for first lap series at current time cursor
-  const debugPosition = useMemo(() => {
-    if (!lapSeries.length) return null;
-    const s = lapSeries[0];
-    if (!s.points || !s.points.length) return null;
+  // const debugPosition = useMemo(() => {
+  //   if (!lapSeries.length) return null;
+  //   const s = lapSeries[0];
+  //   if (!s.points || !s.points.length) return null;
 
-    let best: any = s.points[0];
-    let bestDt = Math.abs(best.t - timeCursor);
-    for (let i = 1; i < s.points.length; i++) {
-      const p: any = s.points[i];
-      const dt = Math.abs(p.t - timeCursor);
-      if (dt < bestDt) {
-        best = p;
-        bestDt = dt;
-      }
-    }
-    return {
-      driverId: s.driverId,
-      displayName: s.displayName,
-      t: best.t,
-      x: best.rawX ?? best.x,
-      y: best.rawY ?? best.y,
-    };
-  }, [lapSeries, timeCursor]);
+  //   let best: any = s.points[0];
+  //   let bestDt = Math.abs(best.t - timeCursor);
+  //   for (let i = 1; i < s.points.length; i++) {
+  //     const p: any = s.points[i];
+  //     const dt = Math.abs(p.t - timeCursor);
+  //     if (dt < bestDt) {
+  //       best = p;
+  //       bestDt = dt;
+  //     }
+  //   }
+  //   return {
+  //     driverId: s.driverId,
+  //     displayName: s.displayName,
+  //     t: best.t,
+  //     x: best.rawX ?? best.x,
+  //     y: best.rawY ?? best.y,
+  //   };
+  // }, [lapSeries, timeCursor]);
 
   const renderMetricChart = (
     metric: "speed" | "throttle" | "brake" | "gear",
@@ -420,10 +421,7 @@ export default function TelemetryDashboard() {
         if (!points.length) return null;
 
         const displayName = drv?.code ?? driverCode;
-        const color =
-          driverColors[displayName] ||
-          driverColors[driverCode] ||
-          "#22c55e";
+        const color = driverColorByCode[driverCode] ?? driverColorPalette[0];
 
         return { driverCode, displayName, color, points };
       })
@@ -769,9 +767,10 @@ return (
           <div className="mt-3 flex items-center gap-3">
             <button
               onClick={loadSelectedTelemetry}
-              className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm"
+              className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
+              disabled={telemetryLoading}
             >
-              Load telemetry for selected drivers
+              {telemetryLoading ? "Loading telemetry…" : "Load telemetry for selected drivers"}
             </button>
             <span className="text-xs text-neutral-400">
               Loaded:&nbsp;
@@ -784,6 +783,11 @@ return (
                 .filter(Boolean)
                 .join(", ") || "none"}
             </span>
+            {telemetryLoading && (
+              <span className="text-xs text-blue-400" aria-live="polite">
+                Fetching telemetry…
+              </span>
+            )}
           </div>
         </div>
       )}
@@ -803,13 +807,6 @@ return (
       {selectedDrivers.length > 0 && (
         <div className="mt-6 space-y-4">
           <h2 className="text-xl font-medium mb-1">Telemetry Charts</h2>
-          {debugPosition && (
-            <div className="text-xs text-gray-500">
-              Debug (first selected lap): t={debugPosition.t.toFixed(3)}s,&nbsp;
-              x={debugPosition.x.toFixed(3)},&nbsp;
-              y={debugPosition.y.toFixed(3)}
-            </div>
-          )}
           {renderMetricChart("speed", "Speed")}
           {renderMetricChart("throttle", "Throttle")}
           {renderMetricChart("brake", "Brake")}
@@ -823,6 +820,10 @@ return (
         <div className="text-center text-gray-500 p-4">
           No qualifying session found for the selected event.
         </div>
+      )}
+
+      {(sessionsLoading || driversLoading) && (
+        <LoadingOverlay message={driversLoading ? "Loading session results…" : "Loading sessions…"} />
       )}
     </div>
   );
