@@ -327,86 +327,90 @@ export default function TelemetryAnimator({
       </div>
 
       {/* Controls */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => setPlaying(p => !p)}
-          className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white"
-        >
-          {playing ? "Pause" : "Play"}
-        </button>
+      <div className="flex flex-col gap-2">
+        {/* Top row: Play/Pause, step buttons, zoom, and playback speed */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setPlaying(p => !p)}
+            className="px-3 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white"
+          >
+            {playing ? "Pause" : "Play"}
+          </button>
 
-        <button
-          onClick={() =>
-            setTimeCursor(c => {
-              const next = clamp(c - 1 / 60, 0, tMax);
-              timeCursorRef.current = next;
-              if (onTimeCursorChange) onTimeCursorChange(next);
-              return next;
-            })
-          }
-          className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white"
-          title="Step back"
-        >
-          ◀︎
-        </button>
-        <button
-          onClick={() =>
-            setTimeCursor(c => {
-              const next = clamp(c + 1 / 60, 0, tMax);
-              timeCursorRef.current = next;
-              if (onTimeCursorChange) onTimeCursorChange(next);
-              return next;
-            })
-          }
-          className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white"
-          title="Step forward"
-        >
-          ▶︎
-        </button>
-        <div className="flex items-center gap-1 ml-2">
           <button
             onClick={() =>
-              setZoomFactor(z => clamp(z - 0.25, 0.25, 4))
+              setTimeCursor(c => {
+                const next = clamp(c - 1 / 60, 0, tMax);
+                timeCursorRef.current = next;
+                if (onTimeCursorChange) onTimeCursorChange(next);
+                return next;
+              })
             }
-            className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs"
-            title="Zoom out"
+            className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white"
+            title="Step back"
           >
-            -
+            ◀︎
           </button>
           <button
             onClick={() =>
-              setZoomFactor(z => clamp(z + 0.25, 0.25, 4))
+              setTimeCursor(c => {
+                const next = clamp(c + 1 / 60, 0, tMax);
+                timeCursorRef.current = next;
+                if (onTimeCursorChange) onTimeCursorChange(next);
+                return next;
+              })
             }
-            className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs"
-            title="Zoom in"
+            className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white"
+            title="Step forward"
           >
-            +
+            ▶︎
           </button>
-          <span className="text-xs text-neutral-400 w-[56px] text-center">
-            {zoomFactor.toFixed(2)}x
-          </span>
-        </div>
-        <div className="flex items-center gap-1 ml-2">
-          {([0.5, 1, 1.5] as const).map((rate) => {
-            const isActive = playbackRate === rate;
-            return (
-              <button
-                key={rate}
-                onClick={() => setPlaybackRate(rate)}
-                className={
-                  "px-2 py-1 rounded-lg text-xs " +
-                  (isActive
-                    ? "bg-neutral-100 text-neutral-900"
-                    : "bg-neutral-800 hover:bg-neutral-700 text-white")
-                }
-              >
-                {rate}x
-              </button>
-            );
-          })}
+          <div className="flex items-center gap-1 ml-2">
+            <button
+              onClick={() =>
+                setZoomFactor(z => clamp(z - 0.25, 0.25, 4))
+              }
+              className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs"
+              title="Zoom out"
+            >
+              -
+            </button>
+            <button
+              onClick={() =>
+                setZoomFactor(z => clamp(z + 0.25, 0.25, 4))
+              }
+              className="px-2 py-2 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-white text-xs"
+              title="Zoom in"
+            >
+              +
+            </button>
+            <span className="text-xs text-neutral-400 w-[56px] text-center">
+              {zoomFactor.toFixed(2)}x
+            </span>
+          </div>
+          <div className="flex items-center gap-1 ml-2">
+            {([0.5, 1, 1.5] as const).map((rate) => {
+              const isActive = playbackRate === rate;
+              return (
+                <button
+                  key={rate}
+                  onClick={() => setPlaybackRate(rate)}
+                  className={
+                    "px-2 py-1 rounded-lg text-xs " +
+                    (isActive
+                      ? "bg-neutral-100 text-neutral-900"
+                      : "bg-neutral-800 hover:bg-neutral-700 text-white")
+                  }
+                >
+                  {rate}x
+                </button>
+              );
+            })}
+          </div>
         </div>
 
-        <div className="flex-1 flex items-center gap-2">
+        {/* Bottom row: Time scrubber and time display */}
+        <div className="flex items-center gap-3">
           <input
             type="range"
             min={0}
@@ -416,12 +420,11 @@ export default function TelemetryAnimator({
             onMouseDown={() => setIsScrubbing(true)}
             onMouseUp={() => setIsScrubbing(false)}
             onChange={(e) => handleScrub(Number(e.target.value))}
-            className="w-full"
+            className="flex-1"
           />
-        </div>
-
-        <div className="text-sm text-neutral-300 min-w-[140px] text-right">
-          {timeCursor.toFixed(2)}s
+          <div className="text-sm text-neutral-300 min-w-[80px] text-right">
+            {timeCursor.toFixed(2)}s
+          </div>
         </div>
       </div>
     </div>
