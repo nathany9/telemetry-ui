@@ -224,6 +224,7 @@ export default function TelemetryDashboard() {
   const [telemetryLoading, setTelemetryLoading] = useState(false);
   const [driversLoading, setDriversLoading] = useState(false);
   const [timeCursor, setTimeCursor] = useState(0);
+  const [layoutMode, setLayoutMode] = useState<'stacked' | 'side-by-side'>('stacked');
 
   const driversByNumber = useMemo(() => {
     const map: Record<string, DriverT> = {};
@@ -557,7 +558,7 @@ export default function TelemetryDashboard() {
       <div className="w-full" key={metric}>
         <div className="flex items-center justify-between mb-1">
           <span className="text-sm font-medium">{label}</span>
-          <span className="text-xs text-gray-400 truncate">
+          <span className="text-xs text-gray-400 truncate min-w-0 text-right flex-shrink-0" style={{ minWidth: '300px' }}>
             {metricValueStrings.join("  |  ")}
           </span>
         </div>
@@ -602,7 +603,7 @@ export default function TelemetryDashboard() {
   };
 
 return (
-    <div className="max-w-4xl mx-auto p-4 bg-neutral-950 text-neutral-100 min-h-screen">
+    <div className={`${layoutMode === 'side-by-side' ? 'max-w-6xl' : 'max-w-4xl'} mx-auto p-4 bg-neutral-950 text-neutral-100 min-h-screen`}>
       <h1 className="text-2xl font-semibold mb-4">
         Telemetry Dashboard — Compare Qualifying Laps
       </h1>
@@ -793,25 +794,47 @@ return (
       )}
 
       {selectedDrivers.length > 0 && lapSeries.length > 0 && (
-        <div className="mt-6">
-          <h2 className="text-xl font-medium mb-2">Lap Animation</h2>
-          <TelemetryAnimator
-            series={lapSeries}
-            showTrailMeters={150}
-            playbackRate={1}
-            onTimeCursorChange={(t: number) => setTimeCursor(t)}
-          />
-        </div>
-      )}
+        <>
+          {/* Layout toggle button */}
+          <div className="mt-6 flex items-center justify-between mb-3">
+            <h2 className="text-xl font-medium">Telemetry View</h2>
+            <button
+              onClick={() => setLayoutMode(prev => prev === 'stacked' ? 'side-by-side' : 'stacked')}
+              className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-sm transition-colors"
+            >
+              {layoutMode === 'stacked' ? 'Side-by-side view' : 'Stacked view'}
+            </button>
+          </div>
 
-      {selectedDrivers.length > 0 && (
-        <div className="mt-6 space-y-4">
-          <h2 className="text-xl font-medium mb-1">Telemetry Charts</h2>
-          {renderMetricChart("speed", "Speed")}
-          {renderMetricChart("throttle", "Throttle")}
-          {renderMetricChart("brake", "Brake")}
-          {renderMetricChart("gear", "Gear")}
-        </div>
+          {/* Main layout container */}
+          <div className={layoutMode === 'side-by-side'
+            ? 'flex flex-col lg:flex-row gap-6'
+            : 'flex flex-col'}>
+
+            {/* Lap Animation section */}
+            <div className={layoutMode === 'side-by-side' ? 'w-[40%]' : 'w-full'}>
+              <h3 className="text-lg font-medium mb-2">Lap Animation</h3>
+              <TelemetryAnimator
+                series={lapSeries}
+                showTrailMeters={150}
+                playbackRate={1}
+                height={layoutMode === 'side-by-side' ? 680 : 520}
+                onTimeCursorChange={(t: number) => setTimeCursor(t)}
+              />
+            </div>
+
+            {/* Telemetry Charts section */}
+            {selectedDrivers.length > 0 && (
+              <div className={layoutMode === 'side-by-side' ? 'w-[60%] space-y-4' : 'mt-6 space-y-4'}>
+                <h3 className="text-lg font-medium mb-1">Telemetry Charts</h3>
+                {renderMetricChart("speed", "Speed")}
+                {renderMetricChart("throttle", "Throttle")}
+                {renderMetricChart("brake", "Brake")}
+                {renderMetricChart("gear", "Gear")}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {sessionsLoading && <div className="text-center p-4 text-gray-500">Loading sessions…</div>}
