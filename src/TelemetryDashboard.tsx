@@ -773,22 +773,40 @@ return (
                 Fastest
               </span>
               <span className="text-xs uppercase tracking-wide text-neutral-500">Showing</span>
-              <button
-                type="button"
-                onClick={() => setTimingScope((scope) =>
-                  scope === 'overall' ? 'selected' : 'overall'
-                )}
-                disabled={!selectedDrivers.length}
-                aria-pressed={timingScope === 'selected'}
-                title={selectedDrivers.length
-                  ? 'Switch between the full field and selected drivers'
-                  : 'Select at least one driver to use the selected view'}
-                className="rounded-lg border border-neutral-700 bg-neutral-800 px-3 py-1.5 text-sm text-neutral-100 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50"
+              <div
+                role="group"
+                aria-label="Timing table scope"
+                className="inline-flex rounded-lg border border-neutral-700 bg-neutral-900 p-1"
               >
-                {timingScope === 'overall'
-                  ? 'Overall field'
-                  : `Selected drivers (${selectedDrivers.length})`}
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setTimingScope('overall')}
+                  aria-pressed={timingScope === 'overall'}
+                  className={`rounded-md px-3 py-1 text-sm transition-colors ${
+                    timingScope === 'overall'
+                      ? 'bg-neutral-100 text-neutral-900 shadow-sm'
+                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'
+                  }`}
+                >
+                  Overall field
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimingScope('selected')}
+                  disabled={!selectedDrivers.length}
+                  aria-pressed={timingScope === 'selected'}
+                  title={!selectedDrivers.length
+                    ? 'Select at least one driver to use this view'
+                    : undefined}
+                  className={`rounded-md px-3 py-1 text-sm transition-colors ${
+                    timingScope === 'selected'
+                      ? 'bg-neutral-100 text-neutral-900 shadow-sm'
+                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  Selected ({selectedDrivers.length})
+                </button>
+              </div>
             </div>
           </div>
           <div className="max-h-[520px] overflow-auto rounded-xl border border-neutral-800 bg-neutral-900">
