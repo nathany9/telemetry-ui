@@ -5,88 +5,114 @@ import { z } from "zod";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import TelemetryAnimator from "./TelemetryAnimator";
 
-const API_BASE = (import.meta as any)?.env?.VITE_API_BASE
-  || "https://telemetry-backend-920948124720.us-west1.run.app";
+const API_BASE = (import.meta.env.VITE_API_BASE
+  || "https://telemetry-backend-920948124720.us-west1.run.app").replace(/\/$/, "");
+const DEFAULT_YEAR = String(new Date().getFullYear());
 
-const fetcher = async (url: string): Promise<any> => {
-  console.log("[TelemetryDashboard] Fetching URL:", url);
-  const r = await fetch(url, { headers: { "Accept": "application/json" } });
-  console.log(`[TelemetryDashboard] Response status for ${url}:`, r.status);
-  if (!r.ok) {
-    console.error("[TelemetryDashboard] Fetch error:", r.status, await r.text());
-    throw new Error(`HTTP ${r.status}`);
+class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
   }
-  const json = await r.json();
-  console.log("[TelemetryDashboard] Response JSON for", url, ":", json);
-  return json;
+}
+
+const fetchJson = async (url: string, init?: RequestInit): Promise<unknown> => {
+  const r = await fetch(url, {
+    ...init,
+    headers: { "Accept": "application/json", ...init?.headers },
+  });
+  if (!r.ok) {
+    let message = `Request failed with HTTP ${r.status}`;
+    try {
+      const body = await r.json();
+      if (typeof body?.detail === "string") message = body.detail;
+    } catch {
+      // Keep the status-based fallback for non-JSON errors.
+    }
+    throw new ApiError(r.status, message);
+  }
+  return r.json();
 };
 
 const driverColorPalette = ["#22c55e", "#3b82f6", "#f97316"];
 
 const SessionSchema = z.object({
-  id: z.string(),
-  year: z.string(),
+  session_id: z.string(),
+  year: z.number(),
   event: z.string(),
   session: z.string(),
 });
-type SessionT = z.infer<typeof SessionSchema>;
-
-const DriverSchema = z.object({
-  driverId: z.string(),
-  driver_number: z.string().optional(),
-  code: z.string(),
-  name: z.string(),
-});
-type DriverT = z.infer<typeof DriverSchema>;
-
-type TelemetryWindow = {
-  t: number[];
-  x?: number[];
-  y?: number[];
-  speed?: number[];
-  throttle?: number[];
-  brake?: number[];
-  gear?: number[];
-  drs?: number[];
-  samples?: any[];
-  data?: any[];
-  lapMeta?: any;
-  meta?: any;
-  lap?: any;
-  telemetry?: any;
-  [key: string]: any;
+type SessionT = {
+  id: string;
+  year: number;
+  event: string;
+  session: string;
 };
 
-const extractTelemetrySamples = (raw: any): any[] => {
-  const telemetry = raw?.telemetry ?? raw;
+const DriverSchema = z.object({
+  driver_number: z.number().nullable(),
+  driver_name: z.string().nullable(),
+  abbreviation: z.string().nullable(),
+  position: z.number().nullable(),
+  fastest_lap: z.number().nullable(),
+  lap_id: z.string().nullable(),
+  lap_time_s: z.number().nullable(),
+  sector1_s: z.number().nullable(),
+  sector2_s: z.number().nullable(),
+  sector3_s: z.number().nullable(),
+});
+type DriverT = {
+  driverNumber?: string;
+  code: string;
+  name: string;
+  position?: number;
+  fastestLap?: number;
+  lapTime?: number;
+  sectors: [number | undefined, number | undefined, number | undefined];
+};
 
-  if (!telemetry || typeof telemetry !== "object") return [];
+const TelemetryWindowSchema = z.object({
+  mode: z.enum(["time", "distance"]),
+  hz: z.number(),
+  t: z.array(z.number()).nullable(),
+  d: z.array(z.number()).nullable(),
+  x: z.array(z.number()),
+  y: z.array(z.number()),
+  speed: z.array(z.number()),
+  throttle: z.array(z.number()),
+  brake: z.array(z.number()),
+  gear: z.array(z.number()),
+  drs: z.array(z.number()),
+});
+type TelemetryWindow = z.infer<typeof TelemetryWindowSchema>;
+type LapPoint = {
+  t: number;
+  x: number;
+  y: number;
+  speed: number;
+};
+type LapSeries = {
+  driverId: string;
+  displayName: string;
+  color: string;
+  points: LapPoint[];
+};
 
-  if (Array.isArray(telemetry)) return telemetry;
-
-  if (Array.isArray(telemetry.samples)) return telemetry.samples;
-
-  if (Array.isArray(telemetry.data)) return telemetry.data;
-
-  if (Array.isArray(telemetry.t)) {
-    const len = telemetry.t.length;
-    const samples: any[] = [];
-    for (let i = 0; i < len; i++) {
-      samples.push({
-        t: telemetry.t[i],
-        x: telemetry.x?.[i],
-        y: telemetry.y?.[i],
-        speed: telemetry.speed?.[i],
-        throttle: telemetry.throttle?.[i],
-        brake: telemetry.brake?.[i],
-        gear: telemetry.gear?.[i],
-        drs: telemetry.drs?.[i],
-      });
-    }
-    return samples;
-  }
-
-  return [];
+const extractTelemetrySamples = (telemetry: TelemetryWindow) => {
+  if (telemetry.mode !== "time" || !telemetry.t) return [];
+  return telemetry.t.map((t, index) => ({
+    t,
+    x: telemetry.x[index],
+    y: telemetry.y[index],
+    speed: telemetry.speed[index],
+    throttle: telemetry.throttle[index],
+    brake: telemetry.brake[index],
+    gear: telemetry.gear[index],
+    drs: telemetry.drs[index],
+  }));
 };
 
 const LoadingOverlay = ({ message }: { message: string }) => (
@@ -98,42 +124,41 @@ const LoadingOverlay = ({ message }: { message: string }) => (
   </div>
 );
 
-async function getSessions(params: { year?: string }): Promise<SessionT[]> {
-  const q = new URLSearchParams();
-  if (params.year) q.set("year", params.year);
-  const url = `${API_BASE}/sessions${q.toString() ? `?${q.toString()}` : ""}`;
-  const raw = await fetcher(url);
-  const arr: any[] = Array.isArray(raw) ? raw : (raw.sessions ?? []);
-  return arr.map((s: any) => {
-    return SessionSchema.parse({
-      id: String(s.session_id ?? s.id),
-      year: String(s.year),
-      event: String(s.event),
-      session: String(s.session),
-    });
-  });
+async function getSessions(year: string): Promise<SessionT[]> {
+  const raw = z.array(SessionSchema).parse(
+    await fetchJson(`${API_BASE}/sessions?year=${encodeURIComponent(year)}`)
+  );
+  return raw.map((session) => ({
+    id: session.session_id,
+    year: session.year,
+    event: session.event,
+    session: session.session,
+  }));
 }
 
 async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
-  const url = `${API_BASE}/sessions/${sessionId}/drivers/raw`;
-  const raw = await fetcher(url);
-  const arr: any[] = Array.isArray(raw)
-    ? raw
-    : Array.isArray(raw.drivers)
-      ? raw.drivers
-      : (raw.drivers ? Object.values(raw.drivers) : []);
-  return arr.map((d: any) => {
-    const driverNumber = d.driver_number ? String(d.driver_number) : undefined;
-    const codeRaw = d.abbreviation;
-    const nameRaw = d.driver_name;
-    const driverId = d.driver_id ?? d.driverId ?? d.id ?? d.DriverId ?? driverNumber ?? codeRaw ?? "unknown";
-    return DriverSchema.parse({
-      driverId: String(driverId),
-      driver_number: String(driverNumber),
-      code: String(codeRaw),
-      name: String(nameRaw),
-    });
-  });
+  const raw = z.array(DriverSchema).parse(
+    await fetchJson(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/drivers/raw`)
+  );
+
+  // A code is required by fastest-telemetry, so rows without one cannot be selected.
+  return raw.flatMap((driver): DriverT[] => {
+    const code = driver.abbreviation?.trim().toUpperCase();
+    if (!code) return [];
+    return [{
+      driverNumber: driver.driver_number == null ? undefined : String(driver.driver_number),
+      code,
+      name: driver.driver_name?.trim() || code,
+      position: driver.position ?? undefined,
+      fastestLap: driver.fastest_lap ?? undefined,
+      lapTime: driver.lap_time_s ?? undefined,
+      sectors: [
+        driver.sector1_s ?? undefined,
+        driver.sector2_s ?? undefined,
+        driver.sector3_s ?? undefined,
+      ],
+    }];
+  }).sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER));
 }
 
 async function fetchFastestTelemetry(
@@ -145,12 +170,10 @@ async function fetchFastestTelemetry(
   const start = 0;
   const end = 999;
   const mode = "time";
-  const url = `${API_BASE}/sessions/${sessionId}/fastest-telemetry?start=${start}&end=${end}&mode=${mode}`;
+  const url = `${API_BASE}/sessions/${encodeURIComponent(sessionId)}/fastest-telemetry?start=${start}&end=${end}&mode=${mode}`;
   const payload = { drivers: driverCodes };
 
-  console.log(`[TelemetryDashboard] POST fastest-telemetry for drivers: ${driverCodes.join(", ")}`, url, payload);
-
-  const response = await fetch(url, {
+  const raw = await fetchJson(url, {
     method: "POST",
     headers: {
       "Accept": "application/json",
@@ -158,97 +181,70 @@ async function fetchFastestTelemetry(
     },
     body: JSON.stringify(payload),
   });
-
-  console.log(`[TelemetryDashboard] Response status for fastest-telemetry ${url}:`, response.status);
-
-  if (!response.ok) {
-    const bodyText = await response.text();
-    console.error("[TelemetryDashboard] Fastest telemetry fetch failed:", response.status, bodyText);
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const json = await response.json();
-  console.log("[TelemetryDashboard] Fastest telemetry response JSON:", json);
-
-  const rawMap: any = json?.telemetry ?? json?.data ?? json;
+  const rawMap = z.record(z.string(), TelemetryWindowSchema).parse(raw);
   const telemetryByDriver: Record<string, TelemetryWindow> = {};
 
-  const normalizeEntry = (key: string, entry: any) => {
-    const lapMeta = entry?.lap ?? entry?.lapMeta ?? entry?.meta ?? entry?.lap_meta;
-    const telemetry = entry?.telemetry ?? entry?.data ?? entry;
-    const driverCode = (lapMeta?.driver ?? entry?.driver ?? key) as string;
-    const window: TelemetryWindow = {
-      t: Array.isArray(telemetry?.t) ? telemetry.t : [],
-      ...(telemetry && typeof telemetry === "object" ? telemetry : {}),
-      lapMeta: lapMeta ?? telemetry?.lapMeta ?? telemetry?.meta,
-      meta: lapMeta ?? telemetry?.meta,
-      lap: lapMeta,
-      telemetry,
-    };
-    return { driverCode, window };
-  };
-
-  // First try to populate using requested driver codes
-  driverCodes.forEach((code) => {
-    if (rawMap && rawMap[code]) {
-      const { window } = normalizeEntry(code, rawMap[code]);
-      telemetryByDriver[code] = window;
-    }
+  // Results are keyed by lap_id, not by driver. Match only against requested
+  // codes because canonical event names can contain spaces and underscores.
+  Object.entries(rawMap).forEach(([lapId, telemetry]) => {
+    const codeFromLapId = lapId.match(/_([^_]+)_[^_]+$/)?.[1]?.toUpperCase();
+    const driverCode = driverCodes.find((code) => code.toUpperCase() === codeFromLapId);
+    if (driverCode) telemetryByDriver[driverCode] = telemetry;
   });
-
-  // Fallback: include any entries present in the response
-  if (rawMap && typeof rawMap === "object") {
-    Object.entries(rawMap).forEach(([key, value]) => {
-      if (typeof value !== "object") return;
-      const { driverCode, window } = normalizeEntry(key, value);
-      const code = driverCode || key;
-      if (!telemetryByDriver[code]) {
-        telemetryByDriver[code] = window;
-      } else if (!telemetryByDriver[code].lapMeta && window.lapMeta) {
-        telemetryByDriver[code].lapMeta = window.lapMeta;
-        telemetryByDriver[code].meta = window.lapMeta;
-        telemetryByDriver[code].lap = window.lap;
-      }
-    });
-  }
 
   return telemetryByDriver;
 }
 
+const formatLapTime = (seconds: number | undefined) => {
+  if (seconds === undefined || !Number.isFinite(seconds)) return "—";
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds - minutes * 60;
+  return `${minutes}:${remainingSeconds.toFixed(3).padStart(6, "0")}`;
+};
+
+const formatSectorTime = (seconds: number | undefined) => {
+  if (seconds === undefined || !Number.isFinite(seconds)) return "—";
+  return seconds.toFixed(3);
+};
+
 export default function TelemetryDashboard() {
-  const [yearFilter, setYearFilter] = useState<string | undefined>(undefined);
+  const [yearFilter, setYearFilter] = useState(DEFAULT_YEAR);
   const [eventFilter, setEventFilter] = useState<string | undefined>(undefined);
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
   const [drivers, setDrivers] = useState<DriverT[]>([]);
   const [telemetryData, setTelemetryData] = useState<Record<string, TelemetryWindow>>({});
   const [telemetryLoading, setTelemetryLoading] = useState(false);
   const [driversLoading, setDriversLoading] = useState(false);
+  const [driversError, setDriversError] = useState<string>();
+  const [telemetryError, setTelemetryError] = useState<string>();
   const [timeCursor, setTimeCursor] = useState(0);
   const [layoutMode, setLayoutMode] = useState<'stacked' | 'side-by-side'>('stacked');
 
-  const driversByNumber = useMemo(() => {
+  const driversByCode = useMemo(() => {
     const map: Record<string, DriverT> = {};
     drivers.forEach((d) => {
-      const num = d.driver_number ?? d.driverId;
-      map[num] = d;
+      map[d.code] = d;
     });
     return map;
   }, [drivers]);
 
   const driverColorByCode = useMemo(() => {
     const map: Record<string, string> = {};
-    selectedDrivers.forEach((driverNumber, idx) => {
-      const drv = driversByNumber[driverNumber];
-      const driverCode = drv?.code ?? driverNumber;
+    selectedDrivers.forEach((driverCode, idx) => {
       map[driverCode] = driverColorPalette[idx % driverColorPalette.length];
     });
     return map;
-  }, [selectedDrivers, driversByNumber]);
+  }, [selectedDrivers]);
 
-  const { data: sessions, isLoading: sessionsLoading } = useSWR(
-    ["sessions", yearFilter ?? ""],
-    () => getSessions({ year: yearFilter }),
-    { revalidateOnFocus: false }
+  const { data: sessions, error: sessionsError, isLoading: sessionsLoading } = useSWR(
+    ["sessions", yearFilter],
+    () => getSessions(yearFilter),
+    {
+      dedupingInterval: 30_000,
+      refreshInterval: 5 * 60_000,
+      revalidateOnFocus: true,
+      shouldRetryOnError: (error) => error instanceof ApiError && error.status === 503,
+    }
   );
 
   const years = useMemo(() => {
@@ -270,16 +266,32 @@ export default function TelemetryDashboard() {
 
   useEffect(() => {
     if (qualifyingSession) {
+      let cancelled = false;
       setDriversLoading(true);
+      setDriversError(undefined);
+      setDrivers([]);
       getDriversForSession(qualifyingSession.id)
-        .then(setDrivers)
-        .catch(err => console.error("[TelemetryDashboard] Error fetching drivers:", err))
-        .finally(() => setDriversLoading(false));
+        .then((nextDrivers) => {
+          if (!cancelled) setDrivers(nextDrivers);
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return;
+          setDrivers([]);
+          setDriversError(error instanceof Error ? error.message : "Unable to load drivers.");
+        })
+        .finally(() => {
+          if (!cancelled) setDriversLoading(false);
+        });
       setSelectedDrivers([]);
       setTelemetryData({});
+      setTelemetryError(undefined);
+      return () => {
+        cancelled = true;
+      };
     } else {
       setDrivers([]);
       setDriversLoading(false);
+      setDriversError(undefined);
     }
   }, [qualifyingSession]);
 
@@ -291,62 +303,56 @@ export default function TelemetryDashboard() {
       return;
     }
 
-    const driverCodes = selectedDrivers
-      .map((driverNumber) => driversByNumber[driverNumber]?.code ?? driverNumber)
-      .filter((code): code is string => Boolean(code));
-    const codesToFetch = driverCodes.filter((code) => !telemetryData[code]);
+    const codesToFetch = selectedDrivers.filter((code) => !telemetryData[code]);
 
     if (!codesToFetch.length) {
       return;
     }
 
     setTelemetryLoading(true);
+    setTelemetryError(undefined);
     try {
       const data = await fetchFastestTelemetry(qualifyingSession.id, codesToFetch);
       setTelemetryData((prev) => ({ ...prev, ...data }));
+      const missing = codesToFetch.filter((code) => !data[code]);
+      if (missing.length) {
+        setTelemetryError(`No usable fastest lap was returned for ${missing.join(", ")}.`);
+      }
     } catch (err) {
-      console.error(
-        `[TelemetryDashboard] Error fetching fastest telemetry for drivers ${codesToFetch.join(", ")}:`,
-        err
-      );
+      setTelemetryError(err instanceof Error ? err.message : "Unable to load telemetry.");
     } finally {
       setTelemetryLoading(false);
     }
   };
 
-  const lapSeries = useMemo(() => {
+  const lapSeries = useMemo<LapSeries[]>(() => {
     return selectedDrivers
-      .map((driverNumber) => {
-        const drv = driversByNumber[driverNumber];
-        const driverCode = drv?.code ?? driverNumber;
+      .map((driverCode) => {
+        const drv = driversByCode[driverCode];
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
         const samples = extractTelemetrySamples(raw);
 
         const points = samples
-          .map((s: any) => {
-            if (s.x === undefined || s.y === undefined || s.t === undefined)
-              return null;
+          .flatMap((sample): LapPoint[] => {
+            if (sample.x === undefined || sample.y === undefined) return [];
 
-            const wx = Number(s.x);
-            const wy = Number(s.y);
+            const wx = Number(sample.x);
+            const wy = Number(sample.y);
 
             // Use raw telemetry coordinates directly for world space
             const worldX = wx;
             const worldY = wy;
 
-            return {
-              t: Number(s.t),
+            return [{
+              t: sample.t,
               x: worldX,
               y: worldY,
-              speed: Number(s.speed) * (1000 / 3600),
-              rawX: wx,
-              rawY: wy,
-            };
+              speed: Number(sample.speed) * (1000 / 3600),
+            }];
           })
-          .filter(Boolean)
-          .sort((a: any, b: any) => a.t - b.t);
+          .sort((a, b) => a.t - b.t);
 
         if (!points.length) return null;
 
@@ -360,33 +366,8 @@ export default function TelemetryDashboard() {
           points,
         };
       })
-      .filter((s): s is any => s !== null);
-  }, [selectedDrivers, telemetryData, driversByNumber]);
-
-  // Debug helper: get current (x, y) for first lap series at current time cursor
-  // const debugPosition = useMemo(() => {
-  //   if (!lapSeries.length) return null;
-  //   const s = lapSeries[0];
-  //   if (!s.points || !s.points.length) return null;
-
-  //   let best: any = s.points[0];
-  //   let bestDt = Math.abs(best.t - timeCursor);
-  //   for (let i = 1; i < s.points.length; i++) {
-  //     const p: any = s.points[i];
-  //     const dt = Math.abs(p.t - timeCursor);
-  //     if (dt < bestDt) {
-  //       best = p;
-  //       bestDt = dt;
-  //     }
-  //   }
-  //   return {
-  //     driverId: s.driverId,
-  //     displayName: s.displayName,
-  //     t: best.t,
-  //     x: best.rawX ?? best.x,
-  //     y: best.rawY ?? best.y,
-  //   };
-  // }, [lapSeries, timeCursor]);
+      .filter((series): series is LapSeries => series !== null);
+  }, [selectedDrivers, telemetryData, driversByCode, driverColorByCode]);
 
   const renderMetricChart = (
     metric: "speed" | "throttle" | "brake" | "gear",
@@ -395,29 +376,27 @@ export default function TelemetryDashboard() {
     if (!selectedDrivers.length) return null;
 
     const seriesByDriver = selectedDrivers
-      .map((driverNumber) => {
-        const drv = driversByNumber[driverNumber];
-        const driverCode = drv?.code ?? driverNumber;
+      .map((driverCode) => {
+        const drv = driversByCode[driverCode];
         const raw = telemetryData[driverCode];
         if (!raw) return null;
 
         const samples = extractTelemetrySamples(raw);
 
         const points = samples
-          .map((s: any) => {
-            if (s.t === undefined || s[metric] === undefined) return null;
-            let v = Number(s[metric]);
+          .flatMap((sample): { t: number; v: number }[] => {
+            if (sample[metric] === undefined) return [];
+            let v = Number(sample[metric]);
             // Brake is a binary signal (on/off)
             if (metric === "brake") {
               v = v > 0.5 ? 1 : 0;
             }
-            return {
-              t: Number(s.t),
+            return [{
+              t: sample.t,
               v,
-            };
+            }];
           })
-          .filter((p: any) => p !== null)
-          .sort((a: any, b: any) => a.t - b.t);
+          .sort((a, b) => a.t - b.t);
 
         if (!points.length) return null;
 
@@ -611,16 +590,14 @@ return (
       {/* Filters: Year & Event */}
       <div className="flex gap-4 mb-6">
         <Select
-          value={yearFilter ?? "all"}
+          value={yearFilter}
           onValueChange={(v: string) => {
-            const newYear = v === "all" ? undefined : v;
-            setYearFilter(newYear);
+            setYearFilter(v);
             setEventFilter(undefined);
           }}
         >
           <SelectTrigger className="w-[120px] bg-neutral-800 text-neutral-100 border border-neutral-700"><SelectValue placeholder="Year" /></SelectTrigger>
           <SelectContent className="bg-neutral-800 text-neutral-100 border border-neutral-700">
-            <SelectItem value="all">All Years</SelectItem>
             {years.map(y => <SelectItem key={y} value={y}>{y}</SelectItem>)}
           </SelectContent>
         </Select>
@@ -631,7 +608,7 @@ return (
             const newEvent = v === "all" ? undefined : v;
             setEventFilter(newEvent);
           }}
-          disabled={!yearFilter}
+          disabled={sessionsLoading || Boolean(sessionsError)}
         >
           <SelectTrigger className="w-[200px] bg-neutral-800 text-neutral-100 border border-neutral-700"><SelectValue placeholder="Event" /></SelectTrigger>
           <SelectContent className="bg-neutral-800 text-neutral-100 border border-neutral-700">
@@ -646,14 +623,17 @@ return (
           <label className="font-medium">Select up to 3 drivers:</label>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {drivers.map((d: DriverT) => {
-              const num = d.driver_number ?? d.driverId;
+              const code = d.code;
               const displayName = d.name;
-              const isChecked = selectedDrivers.includes(num);
+              const isChecked = selectedDrivers.includes(code);
               return (
-                <label key={num} className="flex items-center gap-2">
+                <label
+                  key={code}
+                  className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-900"
+                >
                   <input
                     type="checkbox"
-                    value={num}
+                    value={code}
                     checked={isChecked}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -666,7 +646,17 @@ return (
                       setSelectedDrivers(newSelected);
                     }}
                   />
-                  <span>{displayName} (#{num})</span>
+                  <span className="flex min-w-0 flex-1 items-baseline justify-between gap-3">
+                    <span className="truncate">
+                      <span className="mr-2 text-xs text-neutral-500">
+                        {d.position ? `P${d.position}` : "—"}
+                      </span>
+                      {displayName} ({code}{d.driverNumber ? `, #${d.driverNumber}` : ""})
+                    </span>
+                    <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-400">
+                      {formatLapTime(d.lapTime)}
+                    </span>
+                  </span>
                 </label>
               );
             })}
@@ -683,84 +673,22 @@ return (
         <div className="mt-2">
           <span className="font-medium">Selected drivers:</span>
           <ul className="list-none p-0 flex flex-col gap-2 mt-1">
-            {selectedDrivers.map((driverNumber) => {
-              const drv = driversByNumber[driverNumber];
-              const name = drv?.name ?? driverNumber;
-              const driverCode = drv?.code ?? driverNumber;
-              const raw = telemetryData[driverCode];
-              const meta = raw?.lapMeta ?? raw?.meta ?? raw?.lap ?? raw?.lap_meta ?? undefined;
-
-              const lapTimeSec = meta
-                ? Number(
-                  meta.lap_time_s
-                )
-                : undefined;
-
-              const s1Sec = meta
-                ? Number(
-                  meta.sector1_s
-                )
-                : undefined;
-
-              const s2Sec = meta
-                ? Number(
-                  meta.sector2_s
-                )
-                : undefined;
-
-              const s3Sec = meta
-                ? Number(
-                  meta.sector3_s
-                )
-                : undefined;
-
-              const formatTime = (seconds?: number): string => {
-                if (seconds === undefined || !isFinite(seconds)) return "—";
-                const totalMs = Math.round(seconds * 1000);
-                const minutes = Math.floor(totalMs / 60000);
-                const sec = Math.floor((totalMs % 60000) / 1000);
-                const ms = totalMs % 1000;
-                const secStr = sec.toString().padStart(2, "0");
-                const msStr = ms.toString().padStart(3, "0");
-                return `${minutes}:${secStr}.${msStr}`;
-              };
+            {selectedDrivers.map((driverCode) => {
+              const drv = driversByCode[driverCode];
+              const name = drv?.name ?? driverCode;
+              const loaded = Boolean(telemetryData[driverCode]);
 
               return (
                 <li
-                  key={driverNumber}
-                  className="px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-md text-sm flex flex-col"
+                  key={driverCode}
+                  className="px-3 py-2 bg-neutral-900 border border-neutral-700 rounded-md text-sm flex items-center justify-between"
                 >
                   <div className="font-medium">
-                    {name} (#{driverNumber})
+                    {name} ({driverCode}{drv?.driverNumber ? `, #${drv.driverNumber}` : ""})
                   </div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    <div>
-                      Lap:{" "}
-                      <span className="font-mono">
-                        {formatTime(lapTimeSec)}
-                      </span>
-                    </div>
-                    <div className="flex gap-4 mt-0.5">
-                      <div>
-                        S1:{" "}
-                        <span className="font-mono">
-                          {formatTime(s1Sec)}
-                        </span>
-                      </div>
-                      <div>
-                        S2:{" "}
-                        <span className="font-mono">
-                          {formatTime(s2Sec)}
-                        </span>
-                      </div>
-                      <div>
-                        S3:{" "}
-                        <span className="font-mono">
-                          {formatTime(s3Sec)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+                  <span className={loaded ? "text-xs text-green-400" : "text-xs text-neutral-500"}>
+                    {loaded ? "Telemetry loaded" : "Not loaded"}
+                  </span>
                 </li>
               );
             })}
@@ -776,11 +704,7 @@ return (
             <span className="text-xs text-neutral-400">
               Loaded:&nbsp;
               {selectedDrivers
-                .map((driverNumber) => {
-                  const drv = driversByNumber[driverNumber];
-                  const code = drv?.code ?? driverNumber;
-                  return telemetryData[code] ? code : null;
-                })
+                .map((code) => telemetryData[code] ? code : null)
                 .filter(Boolean)
                 .join(", ") || "none"}
             </span>
@@ -790,7 +714,80 @@ return (
               </span>
             )}
           </div>
+          {telemetryError && (
+            <p className="mt-2 text-sm text-red-400" role="alert">{telemetryError}</p>
+          )}
         </div>
+      )}
+
+      {drivers.length > 0 && (
+        <section className="mt-6" aria-labelledby="lap-sector-times-heading">
+          <div className="mb-3">
+            <h2 id="lap-sector-times-heading" className="text-xl font-medium">
+              Lap &amp; Sector Times
+            </h2>
+            <p className="mt-1 text-sm text-neutral-400">
+              Fastest qualifying laps in classification order
+            </p>
+          </div>
+          <div className="max-h-[520px] overflow-auto rounded-xl border border-neutral-800 bg-neutral-900">
+            <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+              <thead className="sticky top-0 z-10 bg-neutral-800 text-xs uppercase tracking-wide text-neutral-400">
+                <tr>
+                  <th scope="col" className="w-16 px-4 py-3 font-medium">Pos</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Driver</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Lap</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Lap time</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Sector 1</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Sector 2</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Sector 3</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800">
+                {drivers.map((driver) => {
+                  const isSelected = selectedDrivers.includes(driver.code);
+
+                  return (
+                    <tr
+                      key={driver.code}
+                      className={isSelected ? "bg-neutral-800/40 text-neutral-100" : "text-neutral-200"}
+                    >
+                      <td className="px-4 py-3 font-medium tabular-nums text-neutral-400">
+                        {driver.position ?? "—"}
+                      </td>
+                      <th scope="row" className="px-4 py-3 font-medium">
+                        <span className="flex items-center gap-2">
+                          <span
+                            className="h-2.5 w-2.5 rounded-full"
+                            style={{
+                              backgroundColor: isSelected
+                                ? driverColorByCode[driver.code]
+                                : "#525252",
+                            }}
+                            aria-hidden="true"
+                          />
+                          <span>{driver.name}</span>
+                          <span className="text-xs text-neutral-500">{driver.code}</span>
+                        </span>
+                      </th>
+                      <td className="px-4 py-3 tabular-nums text-neutral-400">
+                        {driver.fastestLap ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 font-mono tabular-nums font-medium text-neutral-100">
+                        {formatLapTime(driver.lapTime)}
+                      </td>
+                      {driver.sectors.map((sector, index) => (
+                        <td key={index} className="px-4 py-3 font-mono tabular-nums text-neutral-300">
+                          {formatSectorTime(sector)}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       {selectedDrivers.length > 0 && lapSeries.length > 0 && (
@@ -838,6 +835,22 @@ return (
       )}
 
       {sessionsLoading && <div className="text-center p-4 text-gray-500">Loading sessions…</div>}
+
+      {sessionsError && (
+        <div className="text-center p-4 text-red-400" role="alert">
+          {sessionsError instanceof Error ? sessionsError.message : "Unable to load sessions."}
+        </div>
+      )}
+
+      {driversError && (
+        <div className="text-center p-4 text-red-400" role="alert">{driversError}</div>
+      )}
+
+      {!sessionsLoading && !sessionsError && sessions?.length === 0 && (
+        <div className="text-center p-4 text-gray-500">
+          No processed qualifying sessions are available for {yearFilter}.
+        </div>
+      )}
 
       {!sessionsLoading && !qualifyingSession && yearFilter && eventFilter && (
         <div className="text-center text-gray-500 p-4">

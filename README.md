@@ -5,8 +5,9 @@ Front-end dashboard for exploring motorsport telemetry. It pulls session, driver
 ## What it does
 - Browse seasons and events, then lock onto the qualifying session.
 - Select up to three drivers and load their fastest lap telemetry.
+- Compare every driver's fastest lap and sector times in qualifying order.
 - Animate cars around the track with play/pause, scrubbing, zoom, and speed controls.
-- Inspect lap details (lap time plus sector splits) for each selected driver.
+- See which selected drivers returned usable fastest-lap telemetry.
 - View synchronized charts for speed, throttle, brake, and gear with a shared time cursor.
 
 ## Running it locally

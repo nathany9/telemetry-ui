@@ -226,7 +226,7 @@ export default function TelemetryAnimator({
       let t = currentT;
       const stepT = 0.02;
       const first = sampleAt(s.points, t);
-      let firstScreen = worldToScreen(first.x, first.y, W, H);
+      const firstScreen = worldToScreen(first.x, first.y, W, H);
       ctx.moveTo(firstScreen.x, firstScreen.y);
 
       let remaining = showTrailMeters;
