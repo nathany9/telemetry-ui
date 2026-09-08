@@ -57,11 +57,21 @@ const DriverSchema = z.object({
   driver_name: z.string().nullable(),
   abbreviation: z.string().nullable(),
   position: z.number().nullable(),
+  fastest_lap: z.number().nullable(),
+  lap_id: z.string().nullable(),
+  lap_time_s: z.number().nullable(),
+  sector1_s: z.number().nullable(),
+  sector2_s: z.number().nullable(),
+  sector3_s: z.number().nullable(),
 });
 type DriverT = {
   driverNumber?: string;
   code: string;
   name: string;
+  position?: number;
+  fastestLap?: number;
+  lapTime?: number;
+  sectors: [number | undefined, number | undefined, number | undefined];
 };
 
 const TelemetryWindowSchema = z.object({
@@ -132,15 +142,23 @@ async function getDriversForSession(sessionId: string): Promise<DriverT[]> {
   );
 
   // A code is required by fastest-telemetry, so rows without one cannot be selected.
-  return raw.flatMap((driver) => {
+  return raw.flatMap((driver): DriverT[] => {
     const code = driver.abbreviation?.trim().toUpperCase();
     if (!code) return [];
     return [{
       driverNumber: driver.driver_number == null ? undefined : String(driver.driver_number),
       code,
       name: driver.driver_name?.trim() || code,
+      position: driver.position ?? undefined,
+      fastestLap: driver.fastest_lap ?? undefined,
+      lapTime: driver.lap_time_s ?? undefined,
+      sectors: [
+        driver.sector1_s ?? undefined,
+        driver.sector2_s ?? undefined,
+        driver.sector3_s ?? undefined,
+      ],
     }];
-  });
+  }).sort((a, b) => (a.position ?? Number.MAX_SAFE_INTEGER) - (b.position ?? Number.MAX_SAFE_INTEGER));
 }
 
 async function fetchFastestTelemetry(
@@ -176,6 +194,18 @@ async function fetchFastestTelemetry(
 
   return telemetryByDriver;
 }
+
+const formatLapTime = (seconds: number | undefined) => {
+  if (seconds === undefined || !Number.isFinite(seconds)) return "—";
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds - minutes * 60;
+  return `${minutes}:${remainingSeconds.toFixed(3).padStart(6, "0")}`;
+};
+
+const formatSectorTime = (seconds: number | undefined) => {
+  if (seconds === undefined || !Number.isFinite(seconds)) return "—";
+  return seconds.toFixed(3);
+};
 
 export default function TelemetryDashboard() {
   const [yearFilter, setYearFilter] = useState(DEFAULT_YEAR);
@@ -597,7 +627,10 @@ return (
               const displayName = d.name;
               const isChecked = selectedDrivers.includes(code);
               return (
-                <label key={code} className="flex items-center gap-2">
+                <label
+                  key={code}
+                  className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-neutral-900"
+                >
                   <input
                     type="checkbox"
                     value={code}
@@ -613,8 +646,16 @@ return (
                       setSelectedDrivers(newSelected);
                     }}
                   />
-                  <span>
-                    {displayName} ({code}{d.driverNumber ? `, #${d.driverNumber}` : ""})
+                  <span className="flex min-w-0 flex-1 items-baseline justify-between gap-3">
+                    <span className="truncate">
+                      <span className="mr-2 text-xs text-neutral-500">
+                        {d.position ? `P${d.position}` : "—"}
+                      </span>
+                      {displayName} ({code}{d.driverNumber ? `, #${d.driverNumber}` : ""})
+                    </span>
+                    <span className="shrink-0 font-mono text-xs tabular-nums text-neutral-400">
+                      {formatLapTime(d.lapTime)}
+                    </span>
                   </span>
                 </label>
               );
@@ -677,6 +718,76 @@ return (
             <p className="mt-2 text-sm text-red-400" role="alert">{telemetryError}</p>
           )}
         </div>
+      )}
+
+      {drivers.length > 0 && (
+        <section className="mt-6" aria-labelledby="lap-sector-times-heading">
+          <div className="mb-3">
+            <h2 id="lap-sector-times-heading" className="text-xl font-medium">
+              Lap &amp; Sector Times
+            </h2>
+            <p className="mt-1 text-sm text-neutral-400">
+              Fastest qualifying laps in classification order
+            </p>
+          </div>
+          <div className="max-h-[520px] overflow-auto rounded-xl border border-neutral-800 bg-neutral-900">
+            <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+              <thead className="sticky top-0 z-10 bg-neutral-800 text-xs uppercase tracking-wide text-neutral-400">
+                <tr>
+                  <th scope="col" className="w-16 px-4 py-3 font-medium">Pos</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Driver</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Lap</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Lap time</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Sector 1</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Sector 2</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Sector 3</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-800">
+                {drivers.map((driver) => {
+                  const isSelected = selectedDrivers.includes(driver.code);
+
+                  return (
+                    <tr
+                      key={driver.code}
+                      className={isSelected ? "bg-neutral-800/40 text-neutral-100" : "text-neutral-200"}
+                    >
+                      <td className="px-4 py-3 font-medium tabular-nums text-neutral-400">
+                        {driver.position ?? "—"}
+                      </td>
+                      <th scope="row" className="px-4 py-3 font-medium">
+                        <span className="flex items-center gap-2">
+                          <span
+                            className="h-2.5 w-2.5 rounded-full"
+                            style={{
+                              backgroundColor: isSelected
+                                ? driverColorByCode[driver.code]
+                                : "#525252",
+                            }}
+                            aria-hidden="true"
+                          />
+                          <span>{driver.name}</span>
+                          <span className="text-xs text-neutral-500">{driver.code}</span>
+                        </span>
+                      </th>
+                      <td className="px-4 py-3 tabular-nums text-neutral-400">
+                        {driver.fastestLap ?? "—"}
+                      </td>
+                      <td className="px-4 py-3 font-mono tabular-nums font-medium text-neutral-100">
+                        {formatLapTime(driver.lapTime)}
+                      </td>
+                      {driver.sectors.map((sector, index) => (
+                        <td key={index} className="px-4 py-3 font-mono tabular-nums text-neutral-300">
+                          {formatSectorTime(sector)}
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       {selectedDrivers.length > 0 && lapSeries.length > 0 && (
