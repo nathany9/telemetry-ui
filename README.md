@@ -19,9 +19,17 @@ npm install
 ```
 2) (Optional) Point the UI at your own API by setting `VITE_API_BASE`. If unset, it falls back to the hosted Cloud Run backend which has limited domain access.
 ```bash
-# Local development against a backend running on your machine
 VITE_API_BASE=http://127.0.0.1:8000 npm run dev
-
-# Production build that targets the hosted Cloud Run API
-VITE_API_BASE=https://telemetry-api-7z4ufaf76q-uc.a.run.app npm run build
+```
+3) Start the dev server:
+```bash
+npm run dev
+```
+4) Build for production:
+```bash
+npm run build
+```
+5) Preview the production build locally:
+```bash
+npm run preview
 ```
