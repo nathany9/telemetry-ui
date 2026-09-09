@@ -207,6 +207,18 @@ const formatSectorTime = (seconds: number | undefined) => {
   return seconds.toFixed(3);
 };
 
+const fastestTime = (times: (number | undefined)[]) => {
+  const validTimes = times.filter(
+    (time): time is number => time !== undefined && Number.isFinite(time),
+  );
+  return validTimes.length ? Math.min(...validTimes) : undefined;
+};
+
+const isFastestTime = (time: number | undefined, benchmark: number | undefined) =>
+  time !== undefined
+  && benchmark !== undefined
+  && Math.abs(time - benchmark) < 0.0005;
+
 export default function TelemetryDashboard() {
   const [yearFilter, setYearFilter] = useState(DEFAULT_YEAR);
   const [eventFilter, setEventFilter] = useState<string | undefined>(undefined);
@@ -219,6 +231,7 @@ export default function TelemetryDashboard() {
   const [telemetryError, setTelemetryError] = useState<string>();
   const [timeCursor, setTimeCursor] = useState(0);
   const [layoutMode, setLayoutMode] = useState<'stacked' | 'side-by-side'>('stacked');
+  const [timingScope, setTimingScope] = useState<'overall' | 'selected'>('overall');
 
   const driversByCode = useMemo(() => {
     const map: Record<string, DriverT> = {};
@@ -235,6 +248,20 @@ export default function TelemetryDashboard() {
     });
     return map;
   }, [selectedDrivers]);
+
+  const timingDrivers = useMemo(
+    () => timingScope === 'overall'
+      ? drivers
+      : drivers.filter((driver) => selectedDrivers.includes(driver.code)),
+    [drivers, selectedDrivers, timingScope],
+  );
+
+  const fastestTiming = useMemo(() => ({
+    lap: fastestTime(timingDrivers.map((driver) => driver.lapTime)),
+    sectors: [0, 1, 2].map((sectorIndex) =>
+      fastestTime(timingDrivers.map((driver) => driver.sectors[sectorIndex]))
+    ) as [number | undefined, number | undefined, number | undefined],
+  }), [timingDrivers]);
 
   const { data: sessions, error: sessionsError, isLoading: sessionsLoading } = useSWR(
     ["sessions", yearFilter],
@@ -284,6 +311,7 @@ export default function TelemetryDashboard() {
         });
       setSelectedDrivers([]);
       setTelemetryData({});
+      setTimingScope('overall');
       setTelemetryError(undefined);
       return () => {
         cancelled = true;
@@ -294,6 +322,12 @@ export default function TelemetryDashboard() {
       setDriversError(undefined);
     }
   }, [qualifyingSession]);
+
+  useEffect(() => {
+    if (!selectedDrivers.length && timingScope === 'selected') {
+      setTimingScope('overall');
+    }
+  }, [selectedDrivers.length, timingScope]);
 
 
   const loadSelectedTelemetry = async () => {
@@ -722,13 +756,58 @@ return (
 
       {drivers.length > 0 && (
         <section className="mt-6" aria-labelledby="lap-sector-times-heading">
-          <div className="mb-3">
-            <h2 id="lap-sector-times-heading" className="text-xl font-medium">
-              Lap &amp; Sector Times
-            </h2>
-            <p className="mt-1 text-sm text-neutral-400">
-              Fastest qualifying laps in classification order
-            </p>
+          <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 id="lap-sector-times-heading" className="text-xl font-medium">
+                Lap &amp; Sector Times
+              </h2>
+              <p className="mt-1 text-sm text-neutral-400">
+                {timingScope === 'overall'
+                  ? 'Full qualifying classification'
+                  : 'Selected drivers in qualifying order'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <span className="flex items-center gap-1.5 text-xs text-purple-400">
+                <span className="h-2 w-2 rounded-sm bg-purple-400" aria-hidden="true" />
+                Fastest
+              </span>
+              <span className="text-xs uppercase tracking-wide text-neutral-500">Showing</span>
+              <div
+                role="group"
+                aria-label="Timing table scope"
+                className="inline-flex rounded-lg border border-neutral-700 bg-neutral-900 p-1"
+              >
+                <button
+                  type="button"
+                  onClick={() => setTimingScope('overall')}
+                  aria-pressed={timingScope === 'overall'}
+                  className={`rounded-md px-3 py-1 text-sm transition-colors ${
+                    timingScope === 'overall'
+                      ? 'bg-neutral-100 text-neutral-900 shadow-sm'
+                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'
+                  }`}
+                >
+                  Overall field
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimingScope('selected')}
+                  disabled={!selectedDrivers.length}
+                  aria-pressed={timingScope === 'selected'}
+                  title={!selectedDrivers.length
+                    ? 'Select at least one driver to use this view'
+                    : undefined}
+                  className={`rounded-md px-3 py-1 text-sm transition-colors ${
+                    timingScope === 'selected'
+                      ? 'bg-neutral-100 text-neutral-900 shadow-sm'
+                      : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100'
+                  } disabled:cursor-not-allowed disabled:opacity-40`}
+                >
+                  Selected ({selectedDrivers.length})
+                </button>
+              </div>
+            </div>
           </div>
           <div className="max-h-[520px] overflow-auto rounded-xl border border-neutral-800 bg-neutral-900">
             <table className="w-full min-w-[720px] border-collapse text-left text-sm">
@@ -744,8 +823,9 @@ return (
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-800">
-                {drivers.map((driver) => {
+                {timingDrivers.map((driver) => {
                   const isSelected = selectedDrivers.includes(driver.code);
+                  const hasFastestLap = isFastestTime(driver.lapTime, fastestTiming.lap);
 
                   return (
                     <tr
@@ -773,14 +853,33 @@ return (
                       <td className="px-4 py-3 tabular-nums text-neutral-400">
                         {driver.fastestLap ?? "—"}
                       </td>
-                      <td className="px-4 py-3 font-mono tabular-nums font-medium text-neutral-100">
+                      <td
+                        className={hasFastestLap
+                          ? "bg-purple-500/10 px-4 py-3 font-mono font-semibold tabular-nums text-purple-400"
+                          : "px-4 py-3 font-mono font-medium tabular-nums text-neutral-100"}
+                        title={hasFastestLap ? "Fastest lap in this view" : undefined}
+                      >
                         {formatLapTime(driver.lapTime)}
                       </td>
-                      {driver.sectors.map((sector, index) => (
-                        <td key={index} className="px-4 py-3 font-mono tabular-nums text-neutral-300">
-                          {formatSectorTime(sector)}
-                        </td>
-                      ))}
+                      {driver.sectors.map((sector, index) => {
+                        const hasFastestSector = isFastestTime(
+                          sector,
+                          fastestTiming.sectors[index],
+                        );
+                        return (
+                          <td
+                            key={index}
+                            className={hasFastestSector
+                              ? "bg-purple-500/10 px-4 py-3 font-mono font-semibold tabular-nums text-purple-400"
+                              : "px-4 py-3 font-mono tabular-nums text-neutral-300"}
+                            title={hasFastestSector
+                              ? `Fastest sector ${index + 1} in this view`
+                              : undefined}
+                          >
+                            {formatSectorTime(sector)}
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}
